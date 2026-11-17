@@ -186,7 +186,7 @@ export function createImageGallery(summary, signal, handlers) {
         download.removeAttribute('tabindex');
         const fields = [
             ['生图服务', entry.provider === 'openai' ? 'GPT / OpenAI 兼容接口' : entry.provider === 'gemini' ? 'Google Gemini'
-                    : entry.provider === 'grok' ? 'xAI Grok' : 'NovelAI'],
+                    : entry.provider === 'grok' ? 'xAI Grok' : entry.provider === 'comfyui' ? 'ComfyUI（本机）' : 'NovelAI'],
             ['模型', entry.provider === 'openai' || entry.provider === 'gemini' || entry.provider === 'grok' ? entry.parameters.model
                     : NAI_MODELS.find(model => model.value === entry.parameters.model)?.label ?? entry.parameters.model],
             ['尺寸', `${entry.parameters.width} × ${entry.parameters.height}`],
@@ -204,6 +204,10 @@ export function createImageGallery(summary, signal, handlers) {
         else if (entry.provider === 'grok') {
             fields.push(['接口协议', entry.parameters.protocol === 'xai' ? 'xAI 原生' : 'OpenAI 兼容'], ['请求比例', entry.parameters.aspectRatio], ['分辨率档位', entry.parameters.resolution.toUpperCase()], ['请求质量', entry.parameters.quality]);
         }
+        else if (entry.provider === 'comfyui') {
+            const p = entry.parameters;
+            fields.push(['步数', p.steps], ['CFG', p.cfg], ['Shift', p.shift], ['采样器', p.sampler], ['调度器', p.scheduler], ['请求种子（固定）', p.seed]);
+        }
         else {
             const params = entry.parameters;
             fields.push(['步数', params.steps], ['CFG', params.scale], ['采样器', NAI_SAMPLERS.find(sampler => sampler.value === params.sampler)?.label ?? params.sampler], ['噪声调度', params.model.startsWith('nai-diffusion-5') ? 'Karras' : params.sampler === 'k_dpm_fast' ? '不适用' : NAI_SCHEDULES.find(schedule => schedule.value === params.noiseSchedule)?.label ?? params.noiseSchedule], ['实际种子', entry.seed], ['引导重缩放', params.cfgRescale], ['SMEA', params.sm ? '开启' : '关闭'], ['SMEA DYN', params.smDyn ? '开启' : '关闭']);
@@ -219,7 +223,7 @@ export function createImageGallery(summary, signal, handlers) {
         }));
         const characterPrompts = entry.characters ?? [];
         const promptFields = [[characterPrompts.length ? '全局正面提示词' : '正面提示词', entry.positive]];
-        if (!entry.provider || entry.provider === 'novelai')
+        if (!entry.provider || entry.provider === 'novelai' || entry.provider === 'comfyui')
             promptFields.push([characterPrompts.length ? '全局负面提示词' : '负面提示词', entry.negative]);
         characterPrompts.forEach((character, index) => {
             promptFields.push([`角色 ${index + 1} · 正面提示词`, character.positive]);

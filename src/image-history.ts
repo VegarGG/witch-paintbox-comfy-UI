@@ -1,4 +1,6 @@
 import type { ImageParameters } from './novelai.js';
+import { validateComfyParameters } from './comfy-workflow.js';
+import type { ComfyParameters } from './comfy-types.js';
 import type { CharacterPrompt } from './image-prompt.js';
 import { validateOpenAIImageParameters, type OpenAIImageParameters } from './openai-image.js';
 import {
@@ -26,6 +28,7 @@ interface ImageHistoryData {
 export type ImageHistoryEntry = ImageHistoryData & (
   | { provider?: 'novelai'; parameters: ImageParameters; seed: number }
   | { provider: 'openai'; parameters: OpenAIImageParameters; seed?: never }
+  | { provider: 'comfyui'; parameters: ComfyParameters & { model: string }; seed?: never }
   | { provider: 'gemini'; parameters: Sized<GeminiImageParameters>; seed?: never }
   | { provider: 'grok'; parameters: Sized<GrokImageParameters>; seed?: never }
 );
@@ -245,14 +248,15 @@ async function transact<T>(mode: IDBTransactionMode, action: string, makeRequest
   });
 }
 
-function snapshot(value: unknown): ImageHistoryEntry {
+/** Validate and copy only portable image metadata before either storage backend is touched. */
+export function validateImageHistoryEntry(value: unknown): ImageHistoryEntry {
   const entry = value as ImageHistoryEntry | null;
   if (!entry || typeof entry.id !== 'string' || !entry.id || typeof entry.markerKey !== 'string' || !entry.markerKey
     || !(entry.blob instanceof Blob) || !entry.blob.size
     || !Number.isFinite(entry.createdAt) || entry.createdAt < 0
     || typeof entry.positive !== 'string' || typeof entry.negative !== 'string'
     || (entry.scenePrompt !== undefined && typeof entry.scenePrompt !== 'string')
-    || (entry.provider !== undefined && !['novelai', 'openai', 'gemini', 'grok'].includes(entry.provider))) {
+    || (entry.provider !== undefined && !['novelai', 'openai', 'gemini', 'grok', 'comfyui'].includes(entry.provider))) {
     throw new Error('图片历史记录格式无效，原有记录未修改。');
   }
   let characters: CharacterPrompt[] | undefined;
@@ -279,6 +283,16 @@ function snapshot(value: unknown): ImageHistoryEntry {
     ...(typeof entry.sourceName === 'string' ? { sourceName: entry.sourceName.slice(0, 200) } : {}),
   };
   // Copy only image metadata: connection credentials and arbitrary extra fields never enter this store.
+  if (entry.provider === 'comfyui') {
+    const raw = entry.parameters;
+    if (!raw || typeof raw.model !== 'string' || !raw.model.trim() || raw.model.length > 512 || characters?.length || entry.seed !== undefined
+      || ![raw.width, raw.height].every(size => Number.isInteger(size) && size >= 1 && size <= 16_384)) {
+      throw new Error('ComfyUI 图片历史记录格式无效，原有记录未修改。');
+    }
+    // The raster decoder, not the request canvas, determines stored output dimensions.
+    const checked = validateComfyParameters({ ...raw, width: 512, height: 640 });
+    return { ...common, provider: 'comfyui', parameters: { ...checked, width: raw.width, height: raw.height, model: raw.model } };
+  }
   if (entry.provider === 'openai') {
     // A compatible provider may return a different canvas; retain its validated raster dimensions.
     const parameters = validateOpenAIImageParameters(entry.parameters, 'image');
@@ -318,11 +332,11 @@ function snapshot(value: unknown): ImageHistoryEntry {
 export async function loadImageHistory(markerKey: string): Promise<ImageHistoryEntry[]> {
   if (typeof markerKey !== 'string' || !markerKey) throw new Error('图片标记标识无效，无法读取历史。');
   const entries = await transact('readonly', '读取', store => store.index('markerKey').getAll(markerKey));
-  return entries.map(snapshot).sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+  return entries.map(validateImageHistoryEntry).sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
 }
 
 export async function saveImageHistory(entry: ImageHistoryEntry): Promise<void> {
-  const saved = snapshot(entry);
+  const saved = validateImageHistoryEntry(entry);
   await transact('readwrite', '保存', store => store.put(saved));
   notifyChanged({ savedId: saved.id });
 }
@@ -423,7 +437,7 @@ export async function loadImageHistoryPage(scope: string | null, before: [number
     : IDBKeyRange.bound([scope], before ? [scope, ...before] : [scope, Number.MAX_VALUE, []], false, Boolean(before));
   return walkHistory('readonly', '读取', store => store.index(scope === null ? 'createdAt' : 'scopeCreatedAt').openCursor(range, 'prev'), cursor => {
     let entry: ImageHistoryEntry;
-    try { entry = snapshot(cursor.value); } catch { return true; }
+    try { entry = validateImageHistoryEntry(cursor.value); } catch { return true; }
     if (entries.length === size) { more = true; return false; }
     entries.push(entry);
     return true;

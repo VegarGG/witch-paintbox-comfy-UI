@@ -1,4 +1,6 @@
 import type { ImageSettings } from './image-settings.js';
+import { generateComfyImage } from './comfyui.js';
+import type { ComfyParameters } from './comfy-types.js';
 import { prepareImagePrompt, type CharacterPrompt, type PreparedImagePrompt } from './image-prompt.js';
 import { resolveStoredAnchorPromptFields } from './anchor-resolver.js';
 import { generateImage, type ImageParameters } from './novelai.js';
@@ -26,6 +28,7 @@ export function imageSettingsForMarker(settings: ImageSettings, marker: Pick<Ima
     return { ...settings, grokParameters: { ...settings.grokParameters, aspectRatio: grokRatioForSize(marker.size) } };
   }
   const dimensions = imageSizeDimensions(marker.size);
+  if (settings.provider === 'comfyui') return { ...settings, comfy: { ...settings.comfy, parameters: { ...settings.comfy.parameters, ...dimensions } } };
   return settings.provider === 'openai'
     ? { ...settings, openaiParameters: { ...settings.openaiParameters, ...dimensions } }
     : { ...settings, parameters: { ...settings.parameters, ...dimensions } };
@@ -41,6 +44,7 @@ interface ImageResult {
 export type ConfiguredImageResult = ImageResult & (
   | { provider: 'novelai'; parameters: ImageParameters; seed: number }
   | { provider: 'openai'; parameters: OpenAIImageParameters; seed?: never }
+  | { provider: 'comfyui'; parameters: ComfyParameters & { model: string }; seed?: never }
   | { provider: 'gemini'; parameters: GeminiImageParameters & { width: number; height: number }; seed?: never }
   | { provider: 'grok'; parameters: GrokImageParameters & { width: number; height: number }; seed?: never }
 );
@@ -53,6 +57,11 @@ export async function generatePreparedImage(
   onProgress?: (progress: ImageGenerationProgress) => void,
 ): Promise<ConfiguredImageResult> {
   signal.throwIfAborted();
+  if (settings.provider === 'comfyui') {
+    if (prompt.characters.length) throw withFault(new Error('ComfyUI 不支持 NAI 角色分栏，请使用普通正文。'), 'setup');
+    const result = await generateComfyImage(structuredClone(settings.comfy), prompt.positive, prompt.negative, signal, onProgress);
+    return { blob: result.blob, parameters: result.parameters, provider: 'comfyui', positive: prompt.positive, negative: prompt.negative, characters: [] };
+  }
   const connection = { ...settings.connection };
   if (settings.provider === 'openai') {
     const parameters = { ...settings.openaiParameters };
@@ -93,6 +102,10 @@ export async function generateConfiguredImage(
   artistPositive = '',
 ): Promise<ConfiguredImageResult> {
   signal.throwIfAborted();
+  if (settings.provider === 'comfyui') {
+    const snapshot = { ...settings, comfy: structuredClone(settings.comfy) };
+    return generatePreparedImage(snapshot, { positive: [scene, artistPositive].filter(Boolean).join(', '), negative: settings.negative, characters: [] }, signal, onProgress);
+  }
   const snapshot = { ...settings, connection: { ...settings.connection },
     parameters: { ...settings.parameters }, openaiParameters: { ...settings.openaiParameters },
     geminiParameters: { ...settings.geminiParameters }, grokParameters: { ...settings.grokParameters } };
@@ -121,6 +134,7 @@ export function expectedImageSize(settings: ImageSettings): { width: number; hei
     return geminiExpectedSize(p.model, p.aspectRatio, p.imageSize);
   }
   if (settings.provider === 'grok') return grokExpectedSize(settings.grokParameters.aspectRatio, settings.grokParameters.resolution);
-  const { width, height } = settings.provider === 'openai' ? settings.openaiParameters : settings.parameters;
+  const { width, height } = settings.provider === 'comfyui' ? settings.comfy.parameters
+    : settings.provider === 'openai' ? settings.openaiParameters : settings.parameters;
   return { width, height };
 }

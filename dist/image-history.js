@@ -1,3 +1,4 @@
+import { validateComfyParameters } from './comfy-workflow.js';
 import { validateOpenAIImageParameters } from './openai-image.js';
 import { validateGeminiImageParameters, validateGrokImageParameters, } from './aspect-image.js';
 /** Positive tags for display and manual character selection, not for recreating a request. */
@@ -297,14 +298,15 @@ async function transact(mode, action, makeRequest) {
         }
     });
 }
-function snapshot(value) {
+/** Validate and copy only portable image metadata before either storage backend is touched. */
+export function validateImageHistoryEntry(value) {
     const entry = value;
     if (!entry || typeof entry.id !== 'string' || !entry.id || typeof entry.markerKey !== 'string' || !entry.markerKey
         || !(entry.blob instanceof Blob) || !entry.blob.size
         || !Number.isFinite(entry.createdAt) || entry.createdAt < 0
         || typeof entry.positive !== 'string' || typeof entry.negative !== 'string'
         || (entry.scenePrompt !== undefined && typeof entry.scenePrompt !== 'string')
-        || (entry.provider !== undefined && !['novelai', 'openai', 'gemini', 'grok'].includes(entry.provider))) {
+        || (entry.provider !== undefined && !['novelai', 'openai', 'gemini', 'grok', 'comfyui'].includes(entry.provider))) {
         throw new Error('图片历史记录格式无效，原有记录未修改。');
     }
     let characters;
@@ -331,6 +333,16 @@ function snapshot(value) {
         ...(typeof entry.sourceName === 'string' ? { sourceName: entry.sourceName.slice(0, 200) } : {}),
     };
     // Copy only image metadata: connection credentials and arbitrary extra fields never enter this store.
+    if (entry.provider === 'comfyui') {
+        const raw = entry.parameters;
+        if (!raw || typeof raw.model !== 'string' || !raw.model.trim() || raw.model.length > 512 || characters?.length || entry.seed !== undefined
+            || ![raw.width, raw.height].every(size => Number.isInteger(size) && size >= 1 && size <= 16_384)) {
+            throw new Error('ComfyUI 图片历史记录格式无效，原有记录未修改。');
+        }
+        // The raster decoder, not the request canvas, determines stored output dimensions.
+        const checked = validateComfyParameters({ ...raw, width: 512, height: 640 });
+        return { ...common, provider: 'comfyui', parameters: { ...checked, width: raw.width, height: raw.height, model: raw.model } };
+    }
     if (entry.provider === 'openai') {
         // A compatible provider may return a different canvas; retain its validated raster dimensions.
         const parameters = validateOpenAIImageParameters(entry.parameters, 'image');
@@ -371,10 +383,10 @@ export async function loadImageHistory(markerKey) {
     if (typeof markerKey !== 'string' || !markerKey)
         throw new Error('图片标记标识无效，无法读取历史。');
     const entries = await transact('readonly', '读取', store => store.index('markerKey').getAll(markerKey));
-    return entries.map(snapshot).sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+    return entries.map(validateImageHistoryEntry).sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
 }
 export async function saveImageHistory(entry) {
-    const saved = snapshot(entry);
+    const saved = validateImageHistoryEntry(entry);
     await transact('readwrite', '保存', store => store.put(saved));
     notifyChanged({ savedId: saved.id });
 }
@@ -493,7 +505,7 @@ export async function loadImageHistoryPage(scope, before, limit = 12) {
     return walkHistory('readonly', '读取', store => store.index(scope === null ? 'createdAt' : 'scopeCreatedAt').openCursor(range, 'prev'), cursor => {
         let entry;
         try {
-            entry = snapshot(cursor.value);
+            entry = validateImageHistoryEntry(cursor.value);
         }
         catch {
             return true;

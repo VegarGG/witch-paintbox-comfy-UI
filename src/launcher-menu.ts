@@ -1,9 +1,10 @@
 import { autoProcessReplies } from './auto-process.js';
 import { ChatProcessor } from './chat-processor.js';
 import { bindIllustrationPicker } from './illustration-picker.js';
+import { bindDirectImagePicker } from './direct-image-view.js';
 import { emitPetEvent } from './pet-events.js';
 
-// 画匣里的三样东西，手绘棕墨线加一点水彩：画笔（AI生图）、插图卡（指定插图）、调色刀（设置）
+// 画匣里的手绘棕墨线加一点水彩：画笔（AI生图）、插图卡（指定/正文直出）、调色刀（设置）
 const icons = {
   brush: `<svg viewBox="0 0 40 40" aria-hidden="true">
     <path class="wash" d="M6 33c3-4 7-6 10-5s1 6-4 7-8 0-6-2z"/>
@@ -47,29 +48,46 @@ export function bindLauncherMenu(
     <p class="menu-eyebrow" aria-hidden="true">从画匣里取出……</p>
     ${item('data-process', '让预设 AI 为最新回复插入配图标记', 'AI生图', '为最新回复挑画面', icons.brush, '#E6872A')}
     ${item('data-select', '', '指定插图', '自己圈出要画的段落', icons.card, '#C8A04C')}
+    ${item('data-direct', '只读正文预览，明确确认后经 ComfyUI 生成一张，不改聊天', '正文直出 / ComfyUI', '不用文本模型，不改聊天', icons.card, '#7A9462')}
     ${item('data-configure', '', '设置', '接口、锚定与偏好', icons.knife, '#8C6649')}
     <p role="status"></p><button type="button" data-cancel hidden>取消处理</button>`;
   root.append(menu);
   launcher.setAttribute('aria-controls', menu.id);
   const processButton = menu.querySelector<HTMLButtonElement>('[data-process]')!;
   const selectButton = menu.querySelector<HTMLButtonElement>('[data-select]')!;
+  const directButton = menu.querySelector<HTMLButtonElement>('[data-direct]')!;
   const cancelButton = menu.querySelector<HTMLButtonElement>('[data-cancel]')!;
   const tail = menu.querySelector<HTMLElement>('.menu-tail')!;
   const status = menu.querySelector<HTMLParagraphElement>('p[role="status"]')!;
-  const report = (message: string, busy: boolean, error = false, cancellable = true) => {
-    status.textContent = message;
-    status.classList.toggle('is-error', !!error);
+  // Reports may be synchronous during construction or auto-process event startup.
+  // Cache both busy channels; neither callback reads a not-yet-initialized binding.
+  let legacyBusy = false;
+  let directBusy = false;
+  let picker: ReturnType<typeof bindIllustrationPicker> | undefined;
+  const syncBusy = () => {
+    const busy = legacyBusy || directBusy;
     menu.classList.toggle('is-busy', busy);
     processButton.disabled = busy;
     selectButton.disabled = busy;
-    cancelButton.hidden = !busy;
-    cancelButton.disabled = !cancellable;
+    directButton.disabled = busy;
+    cancelButton.hidden = !legacyBusy;
     launcher.classList.toggle('processing', busy);
-    picker.report(message, busy, !!error, cancellable);
     if (!menu.hidden) place();
   };
+  const report = (message: string, busy: boolean, error = false, cancellable = true) => {
+    status.textContent = message;
+    status.classList.toggle('is-error', !!error);
+    legacyBusy = busy;
+    cancelButton.disabled = !cancellable;
+    picker?.report(message, busy, !!error, cancellable);
+    syncBusy();
+  };
   const processor = new ChatProcessor(report);
-  const picker = bindIllustrationPicker(root, signal, processor);
+  picker = bindIllustrationPicker(root, signal, processor);
+  const direct = bindDirectImagePicker(root, signal, {
+    canStart: () => !processor.busy,
+    onBusyChange(busy) { directBusy = busy; syncBusy(); },
+  });
   autoProcessReplies(processor, signal, message => { if (!processor.busy) report(message, false, true); });
 
   // 贴着画匣弹出：优先放在画匣远离缇娅的一侧；放不下就放到画匣上方或下方；都不行再退回整体旁边。
@@ -133,8 +151,18 @@ export function bindLauncherMenu(
     menu.querySelector<HTMLButtonElement>('button:not(:disabled):not([hidden])')?.focus({ preventScroll: true });
     if (opening) emitPetEvent({ type: 'ui', action: 'menu-open' });
   }
-  processButton.addEventListener('click', () => { void processor.process(); }, { signal });
-  selectButton.addEventListener('click', () => { close(); picker.open(launcher); }, { signal });
+  processButton.addEventListener('click', () => {
+    if (directBusy || processor.busy) return;
+    void processor.process();
+  }, { signal });
+  selectButton.addEventListener('click', () => {
+    if (directBusy || processor.busy) return;
+    close(); picker?.open(launcher);
+  }, { signal });
+  directButton.addEventListener('click', () => {
+    if (processor.busy || directBusy) return;
+    close(); direct.open(launcher);
+  }, { signal });
   cancelButton.addEventListener('click', () => processor.cancel(), { signal });
   const configureButton = menu.querySelector<HTMLButtonElement>('[data-configure]')!;
   configureButton.addEventListener('click', () => { const from = configureButton.getBoundingClientRect(); close(); configure(from); }, { signal });

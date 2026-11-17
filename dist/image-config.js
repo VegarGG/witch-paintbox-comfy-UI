@@ -12,6 +12,7 @@ import { saveImageHistory, onImageHistoryChanged } from './image-history.js';
 import { emitPetEvent, petEnd, petFault, petTaskId } from './pet-events.js';
 import { isImageSizeModeSaving, loadModelSettings, saveImageSizeMode } from './model-settings.js';
 import { imageSizeMode } from './image-size-mode.js';
+import { ComfyConfigPanel } from './comfy-config.js';
 /** Check one draft connection the same way the matching provider will send it. */
 function validateConnectionFor(settings, connection) {
     if (settings.provider === 'novelai')
@@ -29,7 +30,7 @@ function validateConnectionFor(settings, connection) {
     return validateOpenAIImageConnection(connection);
 }
 const OFFICIAL_NAMES = {
-    novelai: 'NovelAI 官方', openai: 'OpenAI 官方', gemini: 'Google 官方', grok: 'xAI 官方',
+    novelai: 'NovelAI 官方', openai: 'OpenAI 官方', gemini: 'Google 官方', grok: 'xAI 官方', comfyui: 'ComfyUI 本机',
 };
 function newId() {
     return `${Date.now().toString(36)}-${crypto.getRandomValues(new Uint32Array(1))[0].toString(36)}`;
@@ -49,6 +50,7 @@ export class ImageConfig {
     moreProviders = false;
     advancedOpen = false;
     vibePanel = null;
+    comfyPanel = null;
     imageUrl = '';
     imageRecord = null;
     stopImageHistory = onImageHistoryChanged(change => {
@@ -70,7 +72,7 @@ export class ImageConfig {
     writing = false;
     pendingSaves = 0;
     saveRevision = 0;
-    get hasPendingWrites() { return this.writing || this.pendingSaves > 0; }
+    get hasPendingWrites() { return this.writing || this.pendingSaves > 0 || !!this.comfyPanel?.hasPendingWrites; }
     constructor() {
         this.reloadSaved();
     }
@@ -119,6 +121,8 @@ export class ImageConfig {
         this.render();
     }
     unmount() {
+        this.comfyPanel?.destroy();
+        this.comfyPanel = null;
         this.maskKey();
         this.cancelModelRefresh();
         this.listeners?.abort();
@@ -152,6 +156,8 @@ export class ImageConfig {
     render() {
         if (!this.container)
             return;
+        this.comfyPanel?.destroy();
+        this.comfyPanel = null;
         if (!this.settings) {
             const message = document.createElement('p');
             message.setAttribute('role', 'alert');
@@ -160,6 +166,29 @@ export class ImageConfig {
             return;
         }
         this.container.innerHTML = imageSettingsView({ ...this.settings, connection: this.connection, activeConnectionId: this.connectionId, models: this.modelOptions }, { connectionName: this.connectionName, artistName: this.artistName, connectionSaved: this.isConnectionSaved(), refreshing: this.modelRequest !== null, moreOpen: this.moreProviders, advancedOpen: this.advancedOpen });
+        if (this.settings.provider === 'comfyui') {
+            this.vibePanel?.destroy();
+            this.vibePanel = null;
+            let countedWrite = false;
+            const panel = new ComfyConfigPanel(this.settings, {
+                onSaved: next => { this.settings = next; },
+                onRecovered: result => this.showRecoveredComfyImage(result),
+                onBusyChange: () => {
+                    // Saving is not cancelled by navigation. Keep the global transfer guard armed even after
+                    // unmount clears this.comfyPanel; the callback belongs to this particular panel instance.
+                    const writing = panel.hasPendingWrites;
+                    if (writing !== countedWrite) {
+                        this.pendingSaves += writing ? 1 : -1;
+                        countedWrite = writing;
+                    }
+                    this.syncGeneration();
+                },
+            });
+            this.comfyPanel = panel;
+            this.comfyPanel.mount(this.container.querySelector('[data-comfy-host]'));
+            this.syncGeneration();
+            return;
+        }
         this.mountVibes();
         this.syncParameters();
         this.syncOpenAIComplexity();
@@ -209,7 +238,7 @@ export class ImageConfig {
         }
     }
     edit(event) {
-        if (this.writing)
+        if (this.writing || this.settings?.provider === 'comfyui')
             return;
         const field = event.target;
         if (!(field instanceof HTMLInputElement || field instanceof HTMLSelectElement || field instanceof HTMLTextAreaElement))
@@ -396,7 +425,7 @@ export class ImageConfig {
         }
     }
     syncImageSizeMode() {
-        if (!this.settings || !this.container)
+        if (!this.settings || !this.container || this.settings.provider === 'comfyui')
             return;
         let mode = 'fixed', error = '';
         try {
@@ -420,7 +449,7 @@ export class ImageConfig {
             : '所有配图使用下方画幅。切换模式会互斥启用当前模型 API 预设中的同名格式条目。'), Boolean(error));
     }
     async select(event) {
-        if (this.writing)
+        if (this.writing || this.settings?.provider === 'comfyui')
             return;
         const field = event.target;
         if (!(field instanceof HTMLSelectElement))
@@ -488,6 +517,8 @@ export class ImageConfig {
         const action = target.closest('button[data-action]')?.dataset.action;
         if (!action || this.writing)
             return;
+        if (this.settings?.provider === 'comfyui' && !['switch-provider', 'generate', 'cancel-generation'].includes(action))
+            return;
         try {
             switch (action) {
                 case 'toggle-key': {
@@ -503,7 +534,7 @@ export class ImageConfig {
                     break;
                 case 'switch-provider': {
                     const provider = target.closest('button')?.dataset.provider;
-                    if (provider === 'novelai' || provider === 'openai' || provider === 'gemini' || provider === 'grok')
+                    if (provider === 'novelai' || provider === 'openai' || provider === 'gemini' || provider === 'grok' || provider === 'comfyui')
                         await this.changeProvider(provider);
                     break;
                 }
@@ -628,7 +659,7 @@ export class ImageConfig {
     }
     syncProviderButtons() {
         for (const button of Array.from(this.container?.querySelectorAll('[data-action="switch-provider"]') ?? [])) {
-            button.disabled = this.writing || this.request !== null;
+            button.disabled = this.writing || this.request !== null || !!this.comfyPanel?.isBusy;
         }
     }
     mountVibes() {
@@ -655,7 +686,7 @@ export class ImageConfig {
     /** The paper strip stays open while Gemini or Grok is the active brush. */
     toggleMoreProviders() {
         const provider = this.settings?.provider;
-        if (provider === 'gemini' || provider === 'grok')
+        if (provider === 'gemini' || provider === 'grok' || provider === 'comfyui')
             return;
         this.moreProviders = !this.moreProviders;
         const group = this.container?.querySelector('.image-provider-switch');
@@ -675,7 +706,7 @@ export class ImageConfig {
         }
     }
     async changeProvider(provider) {
-        if (!this.settings || provider === this.settings.provider || this.request || !this.validParameters())
+        if (!this.settings || provider === this.settings.provider || this.request || this.comfyPanel?.isBusy || !this.validParameters())
             return;
         this.cancelModelRefresh();
         await this.write(async () => {
@@ -683,7 +714,7 @@ export class ImageConfig {
             await saveImageSettings(structuredClone(this.settings));
             await switchImageProvider(provider);
             // Leaving Gemini / Grok for NAI or GPT folds the strip back up.
-            this.moreProviders = provider === 'gemini' || provider === 'grok';
+            this.moreProviders = provider === 'gemini' || provider === 'grok' || provider === 'comfyui';
             this.clearOutput();
             this.reloadSaved();
         });
@@ -782,8 +813,19 @@ export class ImageConfig {
         if (!this.validParameters())
             return;
         this.generationFailed = false;
-        if (!this.isConnectionSaved()) {
-            this.generationMessage = '请先保存当前密钥配置。';
+        let setupError = '';
+        if (this.settings?.provider === 'comfyui') {
+            try {
+                this.comfyPanel?.assertSaved();
+            }
+            catch (error) {
+                setupError = error.message;
+            }
+        }
+        else if (!this.isConnectionSaved())
+            setupError = '请先保存当前密钥配置。';
+        if (setupError) {
+            this.generationMessage = setupError;
             this.generationFailed = true;
             this.syncGeneration();
             emitPetEvent({ type: 'end', id: petTaskId(), task: 'image', source: 'config', result: 'failed', fault: 'setup', message: this.generationMessage });
@@ -860,16 +902,31 @@ export class ImageConfig {
         finally {
             endPet({ ...petImage, result: 'dropped', message: '' });
             this.request = null;
+            this.comfyPanel?.refreshTasks();
             this.syncGeneration();
         }
+    }
+    /** Receipt recovery has no original prompt. Display/download only; never fabricate a history entry. */
+    showRecoveredComfyImage(result) {
+        if (this.settings?.provider !== 'comfyui')
+            return;
+        if (this.imageUrl)
+            URL.revokeObjectURL(this.imageUrl);
+        this.imageUrl = URL.createObjectURL(result.blob);
+        this.imageFilename = `witch-paintbox-comfy-${Date.now()}.${imageFileExtension(result.blob)}`;
+        this.imageRecord = null;
+        this.generationFailed = false;
+        this.generationMessage = '已恢复图片，仅显示和下载；没有原提示词，不写聊天历史或回顾。';
+        this.syncGeneration();
     }
     syncGeneration() {
         if (!this.container || !this.settings)
             return;
         this.syncProviderButtons();
         const busy = this.request !== null;
+        this.comfyPanel?.setGenerationBusy(busy);
         const button = this.container.querySelector('[data-action="generate"]');
-        button.disabled = busy;
+        button.disabled = busy || !!this.comfyPanel?.isBusy;
         button.querySelector('strong').textContent = busy ? this.generationPhase === 'queued' ? '已加入队列' : '正在生成…' : this.imageUrl ? '再次生成图片' : '点击生成图片';
         const cancel = this.container.querySelector('[data-action="cancel-generation"]');
         cancel.hidden = !busy;

@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --experimental-vm-modules tests/image-workflow.test.mjs && node tests/openai-image-26.test.mjs && node tests/illustration-selection.test.mjs"
+    "test": "node node_modules/typescript/bin/tsc -p tsconfig.json && SKIP_BUILD=1 bash qa/run-all.sh",
+    "qa": "bash qa/run-all.sh"
   },
   "devDependencies": {
     "typescript": "~5.8.3"

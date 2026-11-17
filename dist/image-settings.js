@@ -1,18 +1,19 @@
 import { createSettingsStorage } from './host-settings.js';
+import { defaultComfySettings, validateComfySettings } from './comfy-workflow.js';
 import { defaultOpenAIImageParameters, validateOpenAIImageParameters } from './openai-image.js';
 import { withFault } from './pet-events.js';
 import { defaultGeminiImageParameters, defaultGrokImageParameters, validateGeminiImageParameters, validateGrokImageParameters, } from './aspect-image.js';
-export const IMAGE_PROVIDERS = ['novelai', 'openai', 'gemini', 'grok'];
-/** Providers that send one natural-language prompt: no negative field, no NAI columns. */
-export function isNaturalLanguageProvider(provider) { return provider !== 'novelai'; }
+export const IMAGE_PROVIDERS = ['novelai', 'openai', 'gemini', 'grok', 'comfyui'];
+/** Single-prompt cloud providers: no negative field or NAI columns. Comfy has a separate negative binding. */
+export function isNaturalLanguageProvider(provider) { return provider !== 'novelai' && provider !== 'comfyui'; }
 export function imageProviderName(provider) {
-    return { novelai: 'NAI', openai: 'GPT', gemini: 'Gemini', grok: 'Grok' }[provider];
+    return { novelai: 'NAI', openai: 'GPT', gemini: 'Gemini', grok: 'Grok', comfyui: 'ComfyUI' }[provider];
 }
 import { defaultImageParameters, NAI_MODELS, NAI_SAMPLERS, NAI_SCHEDULES, } from './novelai.js';
 const storageKey = 'witch-paintbox:image-settings:v1';
 export function defaultImageSettings(provider = 'novelai') {
     return {
-        provider, openaiParameters: defaultOpenAIImageParameters(), models: [],
+        provider, comfy: defaultComfySettings(), openaiParameters: defaultOpenAIImageParameters(), models: [],
         geminiParameters: defaultGeminiImageParameters(), grokParameters: defaultGrokImageParameters(),
         connection: { channel: 'official', url: '', key: '', appendSuffix: true },
         connectionProfiles: [],
@@ -121,6 +122,8 @@ export function validateImageSettings(value) {
         const item = record(value);
         return { ...connection(item, provider), id: text(item.id, 128, true), name: text(item.name, 128, true) };
     });
+    if (provider === 'comfyui' && (connectionProfiles.length || record(source.connection).key !== '' || record(source.connection).url !== ''))
+        invalid();
     const artists = profiles(source.artists, value => {
         const item = record(value);
         return {
@@ -135,7 +138,7 @@ export function validateImageSettings(value) {
         throw new Error(`${name} 配置不支持独立负面提示词，请先在来源配置中移除负面字段内容，再导入 ${name} 配置。`);
     }
     return {
-        provider, models: modelNames,
+        provider, models: modelNames, comfy: validateComfySettings(source.comfy ?? defaultComfySettings()),
         openaiParameters: validateOpenAIImageParameters(source.openaiParameters ?? defaultOpenAIImageParameters()),
         geminiParameters: validateGeminiImageParameters(source.geminiParameters ?? defaultGeminiImageParameters(), invalid),
         grokParameters: validateGrokImageParameters(source.grokParameters ?? defaultGrokImageParameters(), invalid),
@@ -155,7 +158,7 @@ function sameConnection(left, right) {
 export function defaultAllImageSettings() {
     return { version: 2, activeProvider: 'novelai', profiles: {
             novelai: defaultImageSettings('novelai'), openai: defaultImageSettings('openai'),
-            gemini: defaultImageSettings('gemini'), grok: defaultImageSettings('grok'),
+            gemini: defaultImageSettings('gemini'), grok: defaultImageSettings('grok'), comfyui: defaultImageSettings('comfyui'),
         } };
 }
 export function validateAllImageSettings(value) {
@@ -174,7 +177,7 @@ export function validateAllImageSettings(value) {
     const parsed = {};
     for (const provider of IMAGE_PROVIDERS) {
         const raw = profiles[provider];
-        if (raw === undefined && (provider === 'gemini' || provider === 'grok')) {
+        if (raw === undefined && (provider === 'gemini' || provider === 'grok' || provider === 'comfyui')) {
             parsed[provider] = defaultImageSettings(provider);
             continue;
         }

@@ -174,7 +174,8 @@ export function validateAllModelSettings(value: unknown): AllModelSettings {
   let shared: ModelSharedSettings | null = null;
   for (const provider of IMAGE_PROVIDERS) {
     // Gemini and Grok write natural-language prompts like GPT: start from the GPT preset when missing.
-    const raw = presets[provider] ?? (provider === 'gemini' || provider === 'grok' ? presets.openai : undefined);
+    const raw = presets[provider] ?? (provider === 'comfyui' ? modelPresetSettings(defaultModelSettings(provider))
+      : provider === 'gemini' || provider === 'grok' ? presets.openai : undefined);
     const value = validateModelSettings({ ...record(raw), ...api, presetProvider: provider });
     parsed[provider] = modelPresetSettings(value);
     shared ??= modelSharedSettings(value);

@@ -1,6 +1,7 @@
 import { currentPreferences } from './settings.js';
 const waiting = [];
 let running = 0;
+const activeGroups = new Set();
 let concurrency = 1;
 let draining = false;
 const listeners = new Set();
@@ -56,9 +57,20 @@ function drain() {
     draining = true;
     try {
         while (waiting.length && running < concurrency) {
-            const task = waiting.shift();
+            // Preserve FIFO among runnable jobs. A busy local backend must not reserve cloud slots.
+            const index = waiting.findIndex(task => !task.group || !activeGroups.has(task.group));
+            if (index < 0)
+                break;
+            const [task] = waiting.splice(index, 1);
             ++running;
-            void task.start().finally(() => { --running; drain(); });
+            if (task.group)
+                activeGroups.add(task.group);
+            void task.start().finally(() => {
+                --running;
+                if (task.group)
+                    activeGroups.delete(task.group);
+                drain();
+            });
         }
     }
     finally {
@@ -67,7 +79,7 @@ function drain() {
     }
 }
 /** One shared FIFO for every image entry point; the operation includes response decoding. */
-export function queueImageGeneration(operation, signal, onProgress) {
+export function queueImageGeneration(operation, signal, onProgress, group) {
     return new Promise((resolve, reject) => {
         if (signal.aborted) {
             reject(cancelled());
@@ -84,6 +96,7 @@ export function queueImageGeneration(operation, signal, onProgress) {
         };
         const task = {
             position: 0,
+            group,
             onProgress,
             async start() {
                 signal.removeEventListener('abort', cancel);

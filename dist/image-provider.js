@@ -1,3 +1,4 @@
+import { generateComfyImage } from './comfyui.js';
 import { prepareImagePrompt } from './image-prompt.js';
 import { resolveStoredAnchorPromptFields } from './anchor-resolver.js';
 import { generateImage } from './novelai.js';
@@ -24,6 +25,8 @@ export function imageSettingsForMarker(settings, marker) {
         return { ...settings, grokParameters: { ...settings.grokParameters, aspectRatio: grokRatioForSize(marker.size) } };
     }
     const dimensions = imageSizeDimensions(marker.size);
+    if (settings.provider === 'comfyui')
+        return { ...settings, comfy: { ...settings.comfy, parameters: { ...settings.comfy.parameters, ...dimensions } } };
     return settings.provider === 'openai'
         ? { ...settings, openaiParameters: { ...settings.openaiParameters, ...dimensions } }
         : { ...settings, parameters: { ...settings.parameters, ...dimensions } };
@@ -31,6 +34,12 @@ export function imageSettingsForMarker(settings, marker) {
 /** Send already expanded fields without interpreting library text as source-protocol syntax. */
 export async function generatePreparedImage(settings, prompt, signal, onProgress) {
     signal.throwIfAborted();
+    if (settings.provider === 'comfyui') {
+        if (prompt.characters.length)
+            throw withFault(new Error('ComfyUI 不支持 NAI 角色分栏，请使用普通正文。'), 'setup');
+        const result = await generateComfyImage(structuredClone(settings.comfy), prompt.positive, prompt.negative, signal, onProgress);
+        return { blob: result.blob, parameters: result.parameters, provider: 'comfyui', positive: prompt.positive, negative: prompt.negative, characters: [] };
+    }
     const connection = { ...settings.connection };
     if (settings.provider === 'openai') {
         const parameters = { ...settings.openaiParameters };
@@ -68,6 +77,10 @@ export async function generatePreparedImage(settings, prompt, signal, onProgress
 /** Freeze each click before asynchronous anchor loading and the shared request queue. */
 export async function generateConfiguredImage(settings, scene, signal, onProgress, artistPositive = '') {
     signal.throwIfAborted();
+    if (settings.provider === 'comfyui') {
+        const snapshot = { ...settings, comfy: structuredClone(settings.comfy) };
+        return generatePreparedImage(snapshot, { positive: [scene, artistPositive].filter(Boolean).join(', '), negative: settings.negative, characters: [] }, signal, onProgress);
+    }
     const snapshot = { ...settings, connection: { ...settings.connection },
         parameters: { ...settings.parameters }, openaiParameters: { ...settings.openaiParameters },
         geminiParameters: { ...settings.geminiParameters }, grokParameters: { ...settings.grokParameters } };
@@ -98,6 +111,7 @@ export function expectedImageSize(settings) {
     }
     if (settings.provider === 'grok')
         return grokExpectedSize(settings.grokParameters.aspectRatio, settings.grokParameters.resolution);
-    const { width, height } = settings.provider === 'openai' ? settings.openaiParameters : settings.parameters;
+    const { width, height } = settings.provider === 'comfyui' ? settings.comfy.parameters
+        : settings.provider === 'openai' ? settings.openaiParameters : settings.parameters;
     return { width, height };
 }
