@@ -32,17 +32,18 @@ const RATIO_NAMES: Record<string, string> = {
 const ratioOptions = (ratios: readonly string[]) => ratios.map(value => ({ value, label: `${value} · ${RATIO_NAMES[value] ?? ''}` }));
 
 function providerSwitch(provider: ImageSettings['provider'], moreOpen: boolean): string {
-  const open = moreOpen || provider === 'gemini' || provider === 'grok';
+  const open = moreOpen || provider === 'gemini' || provider === 'grok' || provider === 'comfyui';
   const tab = (value: string, label: string, extra = '') => `<button type="button" data-action="switch-provider" data-provider="${value}" aria-pressed="${provider === value}"${extra}>${label}</button>`;
   return `<div class="feature-tabs image-provider-switch" role="group" aria-label="生图接口类型" data-more-open="${open}">
       ${tab('novelai', 'NAI')}
       ${tab('openai', 'GPT（OpenAI 兼容）')}
-      <button type="button" class="provider-more-toggle" data-action="toggle-more-providers" aria-expanded="${open}" aria-controls="witch-provider-more"${provider === 'gemini' || provider === 'grok' ? ' aria-disabled="true" title="当前正在使用其中的画笔，纸条保持展开"' : ''}>
+      <button type="button" class="provider-more-toggle" data-action="toggle-more-providers" aria-expanded="${open}" aria-controls="witch-provider-more"${provider === 'gemini' || provider === 'grok' || provider === 'comfyui' ? ' aria-disabled="true" title="当前正在使用其中的画笔，纸条保持展开"' : ''}>
         <span class="provider-more-label">${open ? '收起' : '更多画笔'}</span><span class="provider-more-fold" aria-hidden="true"></span>
       </button>
       <div class="provider-more-strip" id="witch-provider-more"${open ? '' : ' hidden'}>
         ${tab('gemini', 'Gemini', open ? '' : ' tabindex="-1"')}
         ${tab('grok', 'Grok', open ? '' : ' tabindex="-1"')}
+        ${tab('comfyui', 'ComfyUI', open ? '' : ' tabindex="-1"')}
       </div>
     </div>`;
 }
@@ -93,6 +94,8 @@ function numberField(name: string, label: string, value: number, min: number, ma
 }
 
 export function imageSettingsView(settings: ImageSettings, state: ImageViewState): string {
+  // Comfy has its own finite, credential-free form. Never fall through to NAI/OpenAI fields.
+  if (settings.provider === 'comfyui') return `<div class="image-settings">${providerSwitch(settings.provider, state.moreOpen)}<div data-comfy-host></div></div>`;
   const { connection, parameters } = settings;
   const kind = settings.provider;
   const aspect = kind === 'gemini' || kind === 'grok';

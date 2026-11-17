@@ -171,10 +171,20 @@ function mergeAnchors(config, incoming, mode) {
     return `${tallyText(tally, mode)}${blocked ? `；${blocked} 个与本地其他角色的名称或别名冲突，已跳过` : ''}`;
 }
 /** A keyless file never replaces a local endpoint: pairing a local key with a shared URL would send it elsewhere. */
-function mergeApi(config, data, mode) {
+function mergeApi(config, data, mode, provided = IMAGE_PROVIDERS) {
     const parts = [];
-    for (const provider of IMAGE_PROVIDERS) {
+    for (const provider of provided) {
         const current = config.image.profiles[provider], incoming = data.image.profiles[provider], blank = defaultImageSettings(provider).connection;
+        if (provider === 'comfyui') {
+            const emptyUrl = defaultImageSettings(provider).comfy.url;
+            if (incoming.comfy.url === current.comfy.url)
+                continue;
+            const take = mode === 'overwrite' || current.comfy.url === emptyUrl;
+            if (take)
+                current.comfy.url = incoming.comfy.url;
+            parts.push(`ComfyUI：${take ? '本机服务地址改用文件' : '保留本机服务地址'}`);
+            continue;
+        }
         if (same(incoming.connection, blank) && !incoming.connectionProfiles.length)
             continue;
         const fresh = same(current.connection, blank) && !current.connectionProfiles.length;
@@ -201,9 +211,18 @@ function mergeApi(config, data, mode) {
     parts.push(`共用模型 API：${take ? '改用文件' : '保留本地'}`);
     return parts.join('；');
 }
-function mergeParameters(config, image, mode) {
-    return joined(IMAGE_PROVIDERS.map(provider => {
+function mergeParameters(config, image, mode, provided = IMAGE_PROVIDERS) {
+    return joined(provided.map(provider => {
         const current = config.image.profiles[provider], incoming = image.profiles[provider], blank = defaultImageSettings(provider);
+        if (provider === 'comfyui') {
+            const fields = ({ workflow, bindings, parameters }) => ({ workflow, bindings, parameters });
+            if (same(fields(incoming.comfy), fields(blank.comfy)))
+                return null;
+            const take = mode === 'overwrite' || same(fields(current.comfy), fields(blank.comfy));
+            if (take)
+                current.comfy = { ...structuredClone(incoming.comfy), url: current.comfy.url };
+            return `ComfyUI：${take ? '工作流、绑定与参数改用文件（地址不变）' : '保留本地工作流与参数'}`;
+        }
         if (PARAMETER_FIELDS.every(field => same(incoming[field], blank[field])))
             return null;
         const take = mode === 'overwrite' || PARAMETER_FIELDS.every(field => same(current[field], blank[field]));
@@ -240,9 +259,10 @@ export function mergeArchive(archive, local, modes) {
         return { config, stores: ['worldbooks', 'model'], details };
     }
     const { data } = archive;
-    details.set('api', mergeApi(config, data, mode('api')));
-    details.set('parameters', mergeParameters(config, data.image, mode('parameters')));
-    details.set('artists', joined(IMAGE_PROVIDERS.map(provider => mergeArtists(config.image.profiles[provider], data.image.profiles[provider], mode('artists'))), '文件中没有画师串'));
+    const provided = archive.sourceProviders ?? IMAGE_PROVIDERS;
+    details.set('api', mergeApi(config, data, mode('api'), provided));
+    details.set('parameters', mergeParameters(config, data.image, mode('parameters'), provided));
+    details.set('artists', joined(provided.map(provider => mergeArtists(config.image.profiles[provider], data.image.profiles[provider], mode('artists'))), '文件中没有画师串'));
     const presetsBefore = { ...config.model.presets };
     details.set('presets', joined(IMAGE_PROVIDERS.map(provider => mergePreset(config.model, provider, data.model.presets[provider], mode('presets'))), '文件中的预设为空，保留本地'));
     if (IMAGE_PROVIDERS.some(provider => config.model.presets[provider] !== presetsBefore[provider])) {

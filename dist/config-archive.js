@@ -123,7 +123,10 @@ function worldbookSettings(value, version) {
     }
     else {
         raw = object(source.attachments, '世界书挂载');
-        fields(raw, [...IMAGE_PROVIDERS], '世界书挂载');
+        if (!['novelai', 'openai'].every(provider => Object.hasOwn(raw, provider))
+            || Object.keys(raw).some(provider => !IMAGE_PROVIDERS.includes(provider))) {
+            throw new Error('世界书挂载字段缺失或含有不支持的生图类型。');
+        }
     }
     // Files from before Gemini / Grok carry only two mount sets; the new channels start empty.
     const attachments = Object.fromEntries(IMAGE_PROVIDERS.map(provider => [provider,
@@ -190,9 +193,9 @@ function archiveConnections(archive) {
     if (archive.kind !== 'all')
         return [];
     const { image, model } = archive.data;
-    return [...IMAGE_PROVIDERS.flatMap(provider => {
+    return [...(archive.sourceProviders ?? IMAGE_PROVIDERS).flatMap(provider => {
             const settings = image.profiles[provider];
-            return [settings.connection, ...settings.connectionProfiles];
+            return provider === 'comfyui' ? [{ key: '', url: settings.comfy.url }] : [settings.connection, ...settings.connectionProfiles];
         }), model.api];
 }
 export function archiveKeyCount(archive) {
@@ -245,6 +248,7 @@ export function parseArchive(source) {
         fields(data, Object.hasOwn(data, 'sharedOutfits') ? [...required, 'sharedOutfits'] : required, '完整配置');
         let image, model;
         if (raw.version === 1) {
+            base.sourceProviders = ['novelai'];
             const modelRaw = object(data.model, '模型配置');
             if (modelRaw.worldbookSource !== 'uploads')
                 throw new Error('配置文件的世界书来源不受支持。');
@@ -259,12 +263,14 @@ export function parseArchive(source) {
             const presets = object(modelRaw.presets, '模型预设');
             for (const provider of IMAGE_PROVIDERS) {
                 // Gemini / Grok presets are absent in files exported before those channels existed.
-                if (presets[provider] === undefined && (provider === 'gemini' || provider === 'grok'))
+                if (presets[provider] === undefined && (provider === 'gemini' || provider === 'grok' || provider === 'comfyui'))
                     continue;
                 if (object(presets[provider], `${providerName(provider)} 预设`).worldbookSource !== 'uploads') {
                     throw new Error(`${providerName(provider)} 预设的世界书来源不受支持。`);
                 }
             }
+            const originalProfiles = object(object(data.image, '生图配置').profiles, '生图通道');
+            base.sourceProviders = IMAGE_PROVIDERS.filter(provider => Object.hasOwn(originalProfiles, provider));
             image = validateAllImageSettings(data.image);
             model = validateAllModelSettings(data.model);
         }
@@ -345,14 +351,17 @@ export function summarizeArchive(archive) {
     }
     const { image, model, anchors, sharedOutfits, worldbooks } = archive.data;
     rows.push({ title: '当前生图类型', detail: providerName(image.activeProvider) });
-    for (const provider of IMAGE_PROVIDERS) {
+    for (const provider of archive.sourceProviders ?? IMAGE_PROVIDERS) {
         const settings = image.profiles[provider], preset = model.presets[provider];
         const canvas = provider === 'novelai' ? `${settings.parameters.width} × ${settings.parameters.height}`
             : provider === 'openai' ? `${settings.openaiParameters.width} × ${settings.openaiParameters.height}`
                 : provider === 'gemini' ? `${settings.geminiParameters.aspectRatio} · ${settings.geminiParameters.imageSize}`
-                    : `${settings.grokParameters.aspectRatio} · ${settings.grokParameters.resolution.toUpperCase()}`;
+                    : provider === 'comfyui' ? `${settings.comfy.parameters.width} × ${settings.comfy.parameters.height}`
+                        : `${settings.grokParameters.aspectRatio} · ${settings.grokParameters.resolution.toUpperCase()}`;
         const modelLabel = provider === 'novelai' ? settings.parameters.model : provider === 'openai' ? settings.openaiParameters.model
-            : provider === 'gemini' ? settings.geminiParameters.model : settings.grokParameters.model;
+            : provider === 'gemini' ? settings.geminiParameters.model : provider === 'comfyui'
+                ? Object.values(settings.comfy.workflow).find(node => node.class_type === 'UNETLoader')?.inputs.unet_name ?? '未选模型'
+                : settings.grokParameters.model;
         const planning = provider === 'openai' && supportsOpenAIImageComplexity(modelLabel)
             ? `，规划深度 ${openAIImageComplexityLabel(settings.openaiParameters.complexity)}` : '';
         rows.push({ title: `${providerName(provider)} 生图 API`, detail: `${settings.connectionProfiles.length} 个保存连接；模型 ${modelLabel || '未选模型'}，${canvas}${planning}，含全部生图参数。` }, { title: `${providerName(provider)} 画师串`, detail: `${settings.artists.length} 个命名配置及当前提示词。${settings.artists.map(item => item.name).join('、')}` }, { title: `${providerName(provider)} 预设`, detail: `“${preset.presetName || '未命名'}”，${preset.head.length + preset.tail.length} 个文本条目，含编排、功能层选择和 ${preset.worldbooks.length} 本世界书挂载。` });

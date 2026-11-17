@@ -1,0 +1,45 @@
+{
+  "positive": {
+    "nodeId": "4",
+    "input": "text"
+  },
+  "negative": {
+    "nodeId": "5",
+    "input": "text"
+  },
+  "width": {
+    "nodeId": "6",
+    "input": "width"
+  },
+  "height": {
+    "nodeId": "6",
+    "input": "height"
+  },
+  "seed": {
+    "nodeId": "8",
+    "input": "seed"
+  },
+  "steps": {
+    "nodeId": "8",
+    "input": "steps"
+  },
+  "cfg": {
+    "nodeId": "8",
+    "input": "cfg"
+  },
+  "sampler": {
+    "nodeId": "8",
+    "input": "sampler_name"
+  },
+  "scheduler": {
+    "nodeId": "8",
+    "input": "scheduler"
+  },
+  "shift": {
+    "nodeId": "7",
+    "input": "shift"
+  },
+  "outputNodeIds": [
+    "10"
+  ]
+}

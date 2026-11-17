@@ -201,7 +201,7 @@ export function createImageGallery(summary: string, signal: AbortSignal, handler
     download.removeAttribute('tabindex');
     const fields: Array<[string, string | number]> = [
       ['生图服务', entry.provider === 'openai' ? 'GPT / OpenAI 兼容接口' : entry.provider === 'gemini' ? 'Google Gemini'
-        : entry.provider === 'grok' ? 'xAI Grok' : 'NovelAI'],
+        : entry.provider === 'grok' ? 'xAI Grok' : entry.provider === 'comfyui' ? 'ComfyUI（本机）' : 'NovelAI'],
       ['模型', entry.provider === 'openai' || entry.provider === 'gemini' || entry.provider === 'grok' ? entry.parameters.model
         : NAI_MODELS.find(model => model.value === entry.parameters.model)?.label ?? entry.parameters.model],
       ['尺寸', `${entry.parameters.width} × ${entry.parameters.height}`],
@@ -216,6 +216,9 @@ export function createImageGallery(summary: string, signal: AbortSignal, handler
     } else if (entry.provider === 'grok') {
       fields.push(['接口协议', entry.parameters.protocol === 'xai' ? 'xAI 原生' : 'OpenAI 兼容'], ['请求比例', entry.parameters.aspectRatio],
         ['分辨率档位', entry.parameters.resolution.toUpperCase()], ['请求质量', entry.parameters.quality]);
+    } else if (entry.provider === 'comfyui') {
+      const p = entry.parameters;
+      fields.push(['步数', p.steps], ['CFG', p.cfg], ['Shift', p.shift], ['采样器', p.sampler], ['调度器', p.scheduler], ['请求种子（固定）', p.seed]);
     } else {
       const params = entry.parameters;
       fields.push(
@@ -237,7 +240,7 @@ export function createImageGallery(summary: string, signal: AbortSignal, handler
     }));
     const characterPrompts = entry.characters ?? [];
     const promptFields: [string, string][] = [[characterPrompts.length ? '全局正面提示词' : '正面提示词', entry.positive]];
-    if (!entry.provider || entry.provider === 'novelai') promptFields.push([characterPrompts.length ? '全局负面提示词' : '负面提示词', entry.negative]);
+    if (!entry.provider || entry.provider === 'novelai' || entry.provider === 'comfyui') promptFields.push([characterPrompts.length ? '全局负面提示词' : '负面提示词', entry.negative]);
     characterPrompts.forEach((character, index) => {
       promptFields.push([`角色 ${index + 1} · 正面提示词`, character.positive]);
       promptFields.push([`角色 ${index + 1} · 负面提示词`, character.negative]);

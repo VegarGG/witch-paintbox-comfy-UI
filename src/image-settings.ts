@@ -1,4 +1,6 @@
 import { createSettingsStorage } from './host-settings.js';
+import { defaultComfySettings, validateComfySettings } from './comfy-workflow.js';
+import type { ComfySettings } from './comfy-types.js';
 import { defaultOpenAIImageParameters, validateOpenAIImageParameters, type OpenAIImageParameters } from './openai-image.js';
 import { withFault } from './pet-events.js';
 
@@ -7,12 +9,12 @@ import {
   type GeminiImageParameters, type GrokImageParameters,
 } from './aspect-image.js';
 
-export type ImageProvider = 'novelai' | 'openai' | 'gemini' | 'grok';
-export const IMAGE_PROVIDERS: readonly ImageProvider[] = ['novelai', 'openai', 'gemini', 'grok'];
-/** Providers that send one natural-language prompt: no negative field, no NAI columns. */
-export function isNaturalLanguageProvider(provider: ImageProvider): boolean { return provider !== 'novelai'; }
+export type ImageProvider = 'novelai' | 'openai' | 'gemini' | 'grok' | 'comfyui';
+export const IMAGE_PROVIDERS: readonly ImageProvider[] = ['novelai', 'openai', 'gemini', 'grok', 'comfyui'];
+/** Single-prompt cloud providers: no negative field or NAI columns. Comfy has a separate negative binding. */
+export function isNaturalLanguageProvider(provider: ImageProvider): boolean { return provider !== 'novelai' && provider !== 'comfyui'; }
 export function imageProviderName(provider: ImageProvider): string {
-  return { novelai: 'NAI', openai: 'GPT', gemini: 'Gemini', grok: 'Grok' }[provider];
+  return { novelai: 'NAI', openai: 'GPT', gemini: 'Gemini', grok: 'Grok', comfyui: 'ComfyUI' }[provider];
 }
 import {
   defaultImageParameters,
@@ -37,6 +39,7 @@ export interface ArtistPreset {
 
 export interface ImageSettings {
   provider: ImageProvider;
+  comfy: ComfySettings;
   openaiParameters: OpenAIImageParameters;
   geminiParameters: GeminiImageParameters;
   grokParameters: GrokImageParameters;
@@ -61,7 +64,7 @@ const storageKey = 'witch-paintbox:image-settings:v1';
 
 export function defaultImageSettings(provider: ImageProvider = 'novelai'): ImageSettings {
   return {
-    provider, openaiParameters: defaultOpenAIImageParameters(), models: [],
+    provider, comfy: defaultComfySettings(), openaiParameters: defaultOpenAIImageParameters(), models: [],
     geminiParameters: defaultGeminiImageParameters(), grokParameters: defaultGrokImageParameters(),
     connection: { channel: 'official', url: '', key: '', appendSuffix: true },
     connectionProfiles: [],
@@ -163,6 +166,7 @@ export function validateImageSettings(value: unknown): ImageSettings {
     const item = record(value);
     return { ...connection(item, provider), id: text(item.id, 128, true), name: text(item.name, 128, true) };
   });
+  if (provider === 'comfyui' && (connectionProfiles.length || record(source.connection).key !== '' || record(source.connection).url !== '')) invalid();
   const artists = profiles(source.artists, value => {
     const item = record(value);
     return {
@@ -177,7 +181,7 @@ export function validateImageSettings(value: unknown): ImageSettings {
     throw new Error(`${name} 配置不支持独立负面提示词，请先在来源配置中移除负面字段内容，再导入 ${name} 配置。`);
   }
   return {
-    provider, models: modelNames,
+    provider, models: modelNames, comfy: validateComfySettings(source.comfy ?? defaultComfySettings()),
     openaiParameters: validateOpenAIImageParameters(source.openaiParameters ?? defaultOpenAIImageParameters()),
     geminiParameters: validateGeminiImageParameters(source.geminiParameters ?? defaultGeminiImageParameters(), invalid),
     grokParameters: validateGrokImageParameters(source.grokParameters ?? defaultGrokImageParameters(), invalid),
@@ -199,7 +203,7 @@ function sameConnection(left: ImageConnection, right: ImageConnection): boolean 
 export function defaultAllImageSettings(): AllImageSettings {
   return { version: 2, activeProvider: 'novelai', profiles: {
     novelai: defaultImageSettings('novelai'), openai: defaultImageSettings('openai'),
-    gemini: defaultImageSettings('gemini'), grok: defaultImageSettings('grok'),
+    gemini: defaultImageSettings('gemini'), grok: defaultImageSettings('grok'), comfyui: defaultImageSettings('comfyui'),
   } };
 }
 
@@ -218,7 +222,7 @@ export function validateAllImageSettings(value: unknown): AllImageSettings {
   const parsed = {} as Record<ImageProvider, ImageSettings>;
   for (const provider of IMAGE_PROVIDERS) {
     const raw = profiles[provider];
-    if (raw === undefined && (provider === 'gemini' || provider === 'grok')) { parsed[provider] = defaultImageSettings(provider); continue; }
+    if (raw === undefined && (provider === 'gemini' || provider === 'grok' || provider === 'comfyui')) { parsed[provider] = defaultImageSettings(provider); continue; }
     parsed[provider] = validateImageSettings(raw);
     if (parsed[provider].provider !== provider) invalid();
   }

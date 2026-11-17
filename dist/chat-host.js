@@ -356,6 +356,165 @@ export function readAssistantMessages() {
         }
     });
 }
+const directActivityEvents = ['CHAT_CHANGED', 'CHAT_LOADED', 'MORE_MESSAGES_LOADED',
+    'CHARACTER_MESSAGE_RENDERED', 'USER_MESSAGE_RENDERED', 'MESSAGE_UPDATED', 'MESSAGE_EDITED',
+    'MESSAGE_EDITING_STARTED', 'MESSAGE_EDIT_STARTED', 'MESSAGE_SWIPED', 'MESSAGE_DELETED',
+    'MESSAGE_SWIPE_DELETED', 'MESSAGE_SENT', 'GENERATION_STARTED', 'GENERATION_ENDED', 'GENERATION_STOPPED',
+    'CHARACTER_EDITED', 'CHARACTER_SELECTED', 'CHARACTER_DELETED', 'GROUP_UPDATED', 'GROUP_SELECTED'];
+function directNativeIdentity(context) {
+    const grouped = context.groupId !== undefined && context.groupId !== null && context.groupId !== '';
+    const character = grouped ? undefined : context.characters?.[Number(context.characterId)];
+    const group = grouped ? context.groups?.find(item => String(item.id) === String(context.groupId)) : undefined;
+    if (grouped ? !group : !character || typeof character.avatar !== 'string' || !character.avatar.trim()) {
+        throw new ChatHostError('无法确认原生聊天的稳定角色或群聊身份，请重新打开聊天。');
+    }
+    return { character, group, scope: JSON.stringify(grouped
+            ? ['group', String(context.groupId)] : ['character', character.avatar]) };
+}
+/**
+ * Pin a selected native AI floor before the first await. Any observed host activity permanently
+ * invalidates this capture, even if the same chat/text is restored before an async operation ends.
+ * This path neither calls the embedded write adapter nor weakens latest-assistant write guards.
+ */
+export async function captureDirectAssistant(value) {
+    if (isSifangEnvironment())
+        throw new ChatHostError('正文直出目前仅支持原生酒馆楼层，Sifang 前端尚未验证。');
+    if (!value || typeof value !== 'object')
+        throw new ChatHostError('直出来源无效，请重新选择原生 AI 楼层。');
+    const source = Object.freeze({
+        scope: value.scope, chatId: value.chatId, messageId: value.messageId, swipeId: value.swipeId,
+        historyId: value.historyId, turnId: value.turnId, text: value.text,
+    });
+    if (typeof source.scope !== 'string' || !source.scope.trim() || typeof source.chatId !== 'string' || !source.chatId.trim()
+        || !Number.isSafeInteger(source.messageId) || source.messageId < 0 || typeof source.text !== 'string' || !source.text.trim()
+        || !(source.swipeId === null || Number.isSafeInteger(source.swipeId) && source.swipeId >= 0)) {
+        throw new ChatHostError('直出来源字段无效，请重新选择原生 AI 楼层。');
+    }
+    if (source.turnId !== null)
+        throw new ChatHostError('内嵌前端的回合归属尚未验证，正文直出仅支持原生楼层。');
+    if (typeof source.historyId !== 'string' || !source.historyId.trim()) {
+        throw new ChatHostError('直出来源缺少唯一稳定 historyId，不能用楼层下标猜测历史归属。');
+    }
+    const context = host(), events = context.eventTypes, emitter = context.eventSource;
+    if (typeof emitter?.on !== 'function' || typeof emitter.removeListener !== 'function'
+        || ['CHAT_CHANGED', 'GENERATION_STARTED', 'MESSAGE_UPDATED', 'MESSAGE_EDITED', 'MESSAGE_SWIPED', 'MESSAGE_DELETED']
+            .some(name => typeof events?.[name] !== 'string' || !events[name])) {
+        throw new ChatHostError('当前宿主未提供完整的聊天变化事件，不能安全捕获直出来源。');
+    }
+    const subscriptions = [];
+    let invalidated = false, disposed = false, epoch = 0;
+    const capturedEpoch = epoch;
+    const dispose = () => {
+        if (disposed)
+            return;
+        disposed = true;
+        invalidated = true;
+        epoch++;
+        renderListeners.delete(invalidate);
+        for (const event of subscriptions) {
+            try {
+                emitter.removeListener(event, invalidate);
+            }
+            catch { /* Remain invalid even if host cleanup fails. */ }
+        }
+        subscriptions.length = 0;
+    };
+    const invalidate = () => {
+        if (invalidated)
+            return;
+        invalidated = true;
+        epoch++;
+        // Do not splice the emitter's listener array while it is dispatching: later host/UI
+        // listeners must still receive this event. Invalidation itself is synchronous.
+        void Promise.resolve().then(dispose);
+    };
+    const requireActive = () => {
+        if (invalidated || disposed || epoch !== capturedEpoch)
+            throw new ChatHostError('直出来源已变化或捕获已失效，请重新选择 AI 正文。');
+    };
+    try {
+        // Subscribe synchronously, including start events, before native module loading or any other await.
+        renderListeners.add(invalidate);
+        for (const event of new Set([...directActivityEvents.map(name => events[name]).filter(Boolean),
+            'js_generation_requested', 'js_generation_started'])) {
+            requireActive();
+            subscriptions.push(event);
+            (emitter.makeFirst ?? emitter.on).call(emitter, event, invalidate);
+        }
+        requireActive();
+        const message = context.chat[source.messageId], identity = directNativeIdentity(context);
+        if (!message || message.is_user || message.is_system || typeof message.mes !== 'string') {
+            throw new ChatHostError('直出来源不是有效原生 AI 楼层，请重新选择。');
+        }
+        if (message.swipes !== undefined && !Array.isArray(message.swipes)) {
+            throw new ChatHostError('当前原生楼层的 swipes 状态无效，请重新打开聊天。');
+        }
+        const chat = context.chat, length = chat.length, { characterId, groupId } = context;
+        const swipes = message.swipes, swipeId = currentSwipe(message), rawSwipeId = message.swipe_id;
+        const swipeTexts = swipes ? [...swipes] : undefined;
+        const characterAvatar = identity.character?.avatar, characterChat = identity.character?.chat;
+        const groupChat = identity.group?.chat_id;
+        const check = () => {
+            requireActive();
+            if (isSifangEnvironment())
+                throw new ChatHostError('宿主已切换，直出来源已失效。');
+            const now = host(), currentIdentity = directNativeIdentity(now);
+            if (now.chat !== chat || now.chat.length !== length || now.chat[source.messageId] !== message
+                || now.characterId !== characterId || now.groupId !== groupId || now.eventSource !== emitter || now.eventTypes !== events
+                || currentIdentity.character !== identity.character || currentIdentity.group !== identity.group
+                || currentIdentity.character?.avatar !== characterAvatar || currentIdentity.character?.chat !== characterChat
+                || currentIdentity.group?.chat_id !== groupChat || currentIdentity.scope !== source.scope || chatId(now) !== source.chatId
+                || message.is_user || message.is_system || message.mes !== source.text
+                || currentSwipe(message) !== source.swipeId || swipeId !== source.swipeId || message.swipe_id !== rawSwipeId
+                || message.swipes !== swipes || (message.swipes?.length ?? 0) !== (swipeTexts?.length ?? 0)
+                || swipeTexts?.some((text, index) => swipes[index] !== text)) {
+                throw new ChatHostError('原生聊天、楼层对象或正文已变化，直出来源已失效。');
+            }
+            if (readEmbeddedTurn(source.messageId)) {
+                throw new ChatHostError('内嵌前端的回合归属尚未验证，正文直出仅支持原生楼层。');
+            }
+            if (historyIdentities(now.chat).get(source.messageId) !== source.historyId) {
+                throw new ChatHostError('直出来源的稳定 historyId 已变化、缺失或碰撞，请重新选择。');
+            }
+            // Read helpers / host getters may synchronously emit a change as well.
+            requireActive();
+            return source;
+        };
+        let checkedState;
+        const assertCurrentSync = () => {
+            try {
+                check();
+                if (!checkedState)
+                    throw new ChatHostError('尚未核对原生生成状态，直出来源不可使用。');
+                // Native module namespaces expose live flags; this does not re-import or yield.
+                requireIdle(checkedState);
+                return check();
+            }
+            catch (error) {
+                dispose();
+                throw error;
+            }
+        };
+        const assertCurrent = async () => {
+            try {
+                check();
+                checkedState = await nativeState();
+                return assertCurrentSync();
+            }
+            catch (error) {
+                dispose();
+                throw error;
+            }
+        };
+        await assertCurrent();
+        check(); // Also guard the outer capture await, not only nativeState's inner await.
+        return Object.freeze({ source, assertCurrent, assertCurrentSync, dispose });
+    }
+    catch (error) {
+        dispose();
+        throw error;
+    }
+}
 /** Uses the host sanitizer; rendering transient text never writes it into chat storage. */
 export function formatChatText(text, messageId) {
     if (isSifangEnvironment())
@@ -524,7 +683,9 @@ export function watchChatRendering(callback) {
     const subscriptions = [];
     for (const name of ['CHAT_CHANGED', 'CHAT_LOADED', 'MORE_MESSAGES_LOADED', 'CHARACTER_MESSAGE_RENDERED',
         'MESSAGE_UPDATED', 'MESSAGE_SWIPED', 'MESSAGE_DELETED', 'MESSAGE_SWIPE_DELETED',
-        'GENERATION_ENDED', 'GENERATION_STOPPED']) {
+        'GENERATION_ENDED', 'GENERATION_STOPPED', 'GENERATION_STARTED', 'MESSAGE_EDITED', 'MESSAGE_SENT',
+        'MESSAGE_EDITING_STARTED', 'MESSAGE_EDIT_STARTED', 'CHARACTER_EDITED', 'CHARACTER_SELECTED',
+        'CHARACTER_DELETED', 'GROUP_UPDATED', 'GROUP_SELECTED']) {
         const event = context.eventTypes?.[name];
         if (!event)
             continue;

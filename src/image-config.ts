@@ -13,6 +13,8 @@ import { saveImageHistory, onImageHistoryChanged, type ImageHistoryEntry } from 
 import { emitPetEvent, petEnd, petFault, petTaskId } from './pet-events.js';
 import { isImageSizeModeSaving, loadModelSettings, saveImageSizeMode } from './model-settings.js';
 import { imageSizeMode } from './image-size-mode.js';
+import { ComfyConfigPanel } from './comfy-config.js';
+import type { ComfyImageResult } from './comfyui.js';
 
 /** Check one draft connection the same way the matching provider will send it. */
 function validateConnectionFor(settings: ImageSettings, connection: ImageConnection): ImageConnection {
@@ -28,7 +30,7 @@ function validateConnectionFor(settings: ImageSettings, connection: ImageConnect
 }
 
 const OFFICIAL_NAMES: Record<ImageSettings['provider'], string> = {
-  novelai: 'NovelAI 官方', openai: 'OpenAI 官方', gemini: 'Google 官方', grok: 'xAI 官方',
+  novelai: 'NovelAI 官方', openai: 'OpenAI 官方', gemini: 'Google 官方', grok: 'xAI 官方', comfyui: 'ComfyUI 本机',
 };
 
 function newId(): string {
@@ -50,6 +52,7 @@ export class ImageConfig {
   private moreProviders = false;
   private advancedOpen = false;
   private vibePanel: VibePanel | null = null;
+  private comfyPanel: ComfyConfigPanel | null = null;
   private imageUrl = '';
   private imageRecord: { id: string; createdAt: number } | null = null;
   private stopImageHistory = onImageHistoryChanged(change => {
@@ -69,7 +72,7 @@ export class ImageConfig {
   private pendingSaves = 0;
   private saveRevision = 0;
 
-  get hasPendingWrites(): boolean { return this.writing || this.pendingSaves > 0; }
+  get hasPendingWrites(): boolean { return this.writing || this.pendingSaves > 0 || !!this.comfyPanel?.hasPendingWrites; }
 
   constructor() {
     this.reloadSaved();
@@ -121,6 +124,8 @@ export class ImageConfig {
   }
 
   unmount(): void {
+    this.comfyPanel?.destroy();
+    this.comfyPanel = null;
     this.maskKey();
     this.cancelModelRefresh();
     this.listeners?.abort();
@@ -155,6 +160,8 @@ export class ImageConfig {
 
   private render(): void {
     if (!this.container) return;
+    this.comfyPanel?.destroy();
+    this.comfyPanel = null;
     if (!this.settings) {
       const message = document.createElement('p');
       message.setAttribute('role', 'alert');
@@ -166,6 +173,26 @@ export class ImageConfig {
       { ...this.settings, connection: this.connection, activeConnectionId: this.connectionId, models: this.modelOptions },
       { connectionName: this.connectionName, artistName: this.artistName, connectionSaved: this.isConnectionSaved(), refreshing: this.modelRequest !== null, moreOpen: this.moreProviders, advancedOpen: this.advancedOpen },
     );
+    if (this.settings.provider === 'comfyui') {
+      this.vibePanel?.destroy();
+      this.vibePanel = null;
+      let countedWrite = false;
+      const panel = new ComfyConfigPanel(this.settings, {
+        onSaved: next => { this.settings = next; },
+        onRecovered: result => this.showRecoveredComfyImage(result),
+        onBusyChange: () => {
+          // Saving is not cancelled by navigation. Keep the global transfer guard armed even after
+          // unmount clears this.comfyPanel; the callback belongs to this particular panel instance.
+          const writing = panel.hasPendingWrites;
+          if (writing !== countedWrite) { this.pendingSaves += writing ? 1 : -1; countedWrite = writing; }
+          this.syncGeneration();
+        },
+      });
+      this.comfyPanel = panel;
+      this.comfyPanel.mount(this.container.querySelector<HTMLElement>('[data-comfy-host]')!);
+      this.syncGeneration();
+      return;
+    }
     this.mountVibes();
     this.syncParameters();
     this.syncOpenAIComplexity();
@@ -208,7 +235,7 @@ export class ImageConfig {
   }
 
   private edit(event: Event): void {
-    if (this.writing) return;
+    if (this.writing || this.settings?.provider === 'comfyui') return;
     const field = event.target;
     if (!(field instanceof HTMLInputElement || field instanceof HTMLSelectElement || field instanceof HTMLTextAreaElement)) return;
     const settings = this.settings!;
@@ -355,7 +382,7 @@ export class ImageConfig {
   }
 
   private syncImageSizeMode(): void {
-    if (!this.settings || !this.container) return;
+    if (!this.settings || !this.container || this.settings.provider === 'comfyui') return;
     let mode: 'fixed' | 'ai' = 'fixed', error = '';
     try { mode = imageSizeMode(loadModelSettings(this.settings.provider)); }
     catch (failure) { error = (failure as Error).message; }
@@ -374,7 +401,7 @@ export class ImageConfig {
   }
 
   private async select(event: Event): Promise<void> {
-    if (this.writing) return;
+    if (this.writing || this.settings?.provider === 'comfyui') return;
     const field = event.target;
     if (!(field instanceof HTMLSelectElement)) return;
     const settings = this.settings!;
@@ -435,6 +462,7 @@ export class ImageConfig {
     if (!(target instanceof Element)) return;
     const action = target.closest<HTMLButtonElement>('button[data-action]')?.dataset.action;
     if (!action || this.writing) return;
+    if (this.settings?.provider === 'comfyui' && !['switch-provider', 'generate', 'cancel-generation'].includes(action)) return;
     try {
       switch (action) {
         case 'toggle-key': {
@@ -448,7 +476,7 @@ export class ImageConfig {
         case 'save-connection': await this.write(() => this.saveConnection()); break;
         case 'switch-provider': {
           const provider = target.closest<HTMLButtonElement>('button')?.dataset.provider;
-          if (provider === 'novelai' || provider === 'openai' || provider === 'gemini' || provider === 'grok') await this.changeProvider(provider);
+          if (provider === 'novelai' || provider === 'openai' || provider === 'gemini' || provider === 'grok' || provider === 'comfyui') await this.changeProvider(provider);
           break;
         }
         case 'toggle-more-providers': this.toggleMoreProviders(); break;
@@ -551,7 +579,7 @@ export class ImageConfig {
 
   private syncProviderButtons(): void {
     for (const button of Array.from(this.container?.querySelectorAll<HTMLButtonElement>('[data-action="switch-provider"]') ?? [])) {
-      button.disabled = this.writing || this.request !== null;
+      button.disabled = this.writing || this.request !== null || !!this.comfyPanel?.isBusy;
     }
   }
 
@@ -579,7 +607,7 @@ export class ImageConfig {
   /** The paper strip stays open while Gemini or Grok is the active brush. */
   private toggleMoreProviders(): void {
     const provider = this.settings?.provider;
-    if (provider === 'gemini' || provider === 'grok') return;
+    if (provider === 'gemini' || provider === 'grok' || provider === 'comfyui') return;
     this.moreProviders = !this.moreProviders;
     const group = this.container?.querySelector<HTMLElement>('.image-provider-switch');
     const toggle = group?.querySelector<HTMLButtonElement>('[data-action="toggle-more-providers"]');
@@ -595,14 +623,14 @@ export class ImageConfig {
   }
 
   private async changeProvider(provider: ImageSettings['provider']): Promise<void> {
-    if (!this.settings || provider === this.settings.provider || this.request || !this.validParameters()) return;
+    if (!this.settings || provider === this.settings.provider || this.request || this.comfyPanel?.isBusy || !this.validParameters()) return;
     this.cancelModelRefresh();
     await this.write(async () => {
       // The connection editor is a separate draft: switching never confirms an unsaved key.
       await saveImageSettings(structuredClone(this.settings!));
       await switchImageProvider(provider);
       // Leaving Gemini / Grok for NAI or GPT folds the strip back up.
-      this.moreProviders = provider === 'gemini' || provider === 'grok';
+      this.moreProviders = provider === 'gemini' || provider === 'grok' || provider === 'comfyui';
       this.clearOutput();
       this.reloadSaved();
     });
@@ -687,8 +715,13 @@ export class ImageConfig {
     if (this.request) return;
     if (!this.validParameters()) return;
     this.generationFailed = false;
-    if (!this.isConnectionSaved()) {
-      this.generationMessage = '请先保存当前密钥配置。';
+    let setupError = '';
+    if (this.settings?.provider === 'comfyui') {
+      try { this.comfyPanel?.assertSaved(); }
+      catch (error) { setupError = (error as Error).message; }
+    } else if (!this.isConnectionSaved()) setupError = '请先保存当前密钥配置。';
+    if (setupError) {
+      this.generationMessage = setupError;
       this.generationFailed = true;
       this.syncGeneration();
       emitPetEvent({ type: 'end', id: petTaskId(), task: 'image', source: 'config', result: 'failed', fault: 'setup', message: this.generationMessage });
@@ -756,16 +789,30 @@ export class ImageConfig {
     } finally {
       endPet({ ...petImage, result: 'dropped', message: '' });
       this.request = null;
+      this.comfyPanel?.refreshTasks();
       this.syncGeneration();
     }
+  }
+
+  /** Receipt recovery has no original prompt. Display/download only; never fabricate a history entry. */
+  private showRecoveredComfyImage(result: ComfyImageResult): void {
+    if (this.settings?.provider !== 'comfyui') return;
+    if (this.imageUrl) URL.revokeObjectURL(this.imageUrl);
+    this.imageUrl = URL.createObjectURL(result.blob);
+    this.imageFilename = `witch-paintbox-comfy-${Date.now()}.${imageFileExtension(result.blob)}`;
+    this.imageRecord = null;
+    this.generationFailed = false;
+    this.generationMessage = '已恢复图片，仅显示和下载；没有原提示词，不写聊天历史或回顾。';
+    this.syncGeneration();
   }
 
   private syncGeneration(): void {
     if (!this.container || !this.settings) return;
     this.syncProviderButtons();
     const busy = this.request !== null;
+    this.comfyPanel?.setGenerationBusy(busy);
     const button = this.container.querySelector<HTMLButtonElement>('[data-action="generate"]')!;
-    button.disabled = busy;
+    button.disabled = busy || !!this.comfyPanel?.isBusy;
     button.querySelector('strong')!.textContent = busy ? this.generationPhase === 'queued' ? '已加入队列' : '正在生成…' : this.imageUrl ? '再次生成图片' : '点击生成图片';
     const cancel = this.container.querySelector<HTMLButtonElement>('[data-action="cancel-generation"]')!;
     cancel.hidden = !busy;

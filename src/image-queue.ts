@@ -6,12 +6,14 @@ export type ImageGenerationProgress =
 
 interface QueuedGeneration {
   position: number;
+  group?: 'comfyui';
   onProgress?: (progress: ImageGenerationProgress) => void;
   start: () => Promise<void>;
 }
 
 const waiting: QueuedGeneration[] = [];
 let running = 0;
+const activeGroups = new Set<string>();
 let concurrency = 1;
 let draining = false;
 export interface ImageQueueState { generating: boolean; active: number; queued: number; limit: number }
@@ -71,9 +73,17 @@ function drain(): void {
   draining = true;
   try {
     while (waiting.length && running < concurrency) {
-      const task = waiting.shift()!;
+      // Preserve FIFO among runnable jobs. A busy local backend must not reserve cloud slots.
+      const index = waiting.findIndex(task => !task.group || !activeGroups.has(task.group));
+      if (index < 0) break;
+      const [task] = waiting.splice(index, 1);
       ++running;
-      void task.start().finally(() => { --running; drain(); });
+      if (task.group) activeGroups.add(task.group);
+      void task.start().finally(() => {
+        --running;
+        if (task.group) activeGroups.delete(task.group);
+        drain();
+      });
     }
   } finally {
     draining = false;
@@ -86,6 +96,7 @@ export function queueImageGeneration<T>(
   operation: () => Promise<T>,
   signal: AbortSignal,
   onProgress?: (progress: ImageGenerationProgress) => void,
+  group?: 'comfyui',
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     if (signal.aborted) {
@@ -102,6 +113,7 @@ export function queueImageGeneration<T>(
     };
     const task: QueuedGeneration = {
       position: 0,
+      group,
       onProgress,
       async start() {
         signal.removeEventListener('abort', cancel);
