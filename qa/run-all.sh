@@ -10,6 +10,7 @@ fi
   "$ROOT/tests/image-workflow.test.mjs" \
   "$ROOT/tests/openai-image-26.test.mjs" \
   "$ROOT/tests/illustration-selection.test.mjs" \
+  "$ROOT/tests/comfy-model-presets.test.mjs" \
   "$ROOT/qa/T-01/workflow.test.mjs" \
   "$ROOT/qa/T-01/protocol.test.mjs" \
   "$ROOT/qa/T-02/settings.test.mjs" \

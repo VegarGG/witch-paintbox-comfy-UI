@@ -49,9 +49,10 @@ export function validateComfyUrl(value) {
 }
 /** The companion UI/API files are checked against this plain, non-subgraph template. */
 export function defaultComfySettings() {
+    const steps = 20;
     return {
         url: 'http://127.0.0.1:8188',
-        parameters: { width: 512, height: 640, seed: 0, steps: 25, cfg: 2.5, shift: 5, sampler: 'er_sde', scheduler: 'simple' },
+        parameters: { width: 512, height: 640, seed: 0, steps, cfg: 2.5, shift: 5, sampler: 'er_sde', scheduler: 'simple' },
         bindings: {
             positive: { nodeId: '4', input: 'text' }, negative: { nodeId: '5', input: 'text' },
             width: { nodeId: '6', input: 'width' }, height: { nodeId: '6', input: 'height' },
@@ -67,7 +68,7 @@ export function defaultComfySettings() {
             '5': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['2', 0] } },
             '6': { class_type: 'EmptyFlux2LatentImage', inputs: { width: 512, height: 640, batch_size: 1 } },
             '7': { class_type: 'ModelSamplingAuraFlow', inputs: { model: ['1', 0], shift: 5 } },
-            '8': { class_type: 'KSampler', inputs: { model: ['7', 0], seed: 0, steps: 25, cfg: 2.5, sampler_name: 'er_sde',
+            '8': { class_type: 'KSampler', inputs: { model: ['7', 0], seed: 0, steps, cfg: 2.5, sampler_name: 'er_sde',
                     scheduler: 'simple', positive: ['4', 0], negative: ['5', 0], latent_image: ['6', 0], denoise: 1 } },
             '9': { class_type: 'VAEDecode', inputs: { samples: ['8', 0], vae: ['3', 0] } },
             '10': { class_type: 'SaveImage', inputs: { images: ['9', 0], filename_prefix: 'witch-paintbox/dirty-moss-v2' } },

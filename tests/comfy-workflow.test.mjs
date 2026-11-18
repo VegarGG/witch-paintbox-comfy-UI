@@ -12,7 +12,7 @@ test('Comfy defaults use a loopback service and an explicit single-image MOSS gr
   assert.ok(nodes.some(node => node.class_type === 'UNETLoader' && node.inputs.unet_name === 'Dirty-MossV2-CONVROT8.safetensors'));
   assert.equal(nodes.find(node => node.class_type === 'CLIPLoader').inputs.type, 'moss_image');
   assert.equal(nodes.find(node => node.class_type === 'EmptyFlux2LatentImage').inputs.batch_size, 1);
-  assert.equal(settings.parameters.steps, 25);
+  assert.equal(settings.parameters.steps, 20);
   assert.equal(settings.parameters.cfg, 2.5);
   assert.equal(settings.parameters.shift, 5);
   assert.equal(settings.parameters.sampler, 'er_sde');
