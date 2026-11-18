@@ -8,9 +8,9 @@
 
 本 fork 新增独立的本机 ComfyUI 配置和“正文直出 / ComfyUI”入口：已有 AI 正文预览 → 手动确认单张 → 既有图库/历史；不调用独立文本模型、不展开世界书/锚点、不改聊天。原四个提供方与旧标记/自动化路径保留，不能把旧“AI生图”当作无写回入口。
 
-**通过本 fork 的 PR 交付，由用户审核并合并到 `main` 后，再在 TauriTavern 通过 Git URL 安装。尚未安装到实际宿主，不手工复制部署、不自动合并。** 安装 URL 为 `https://github.com/VegarGG/witch-paintbox-comfy-UI`，分支填 `main` 或留空使用默认分支；合并前默认分支不含本 PR 的新功能。完整步骤、使用与回滚见[中文实验说明](<README-zh.md>)，真实验收和性能空表见[验证边界](<qa/gaps.md>)，开发现场仅看[唯一续接入口](<NEXT.md>)。
+**通过本 fork 的 PR 交付，由用户审核并合并到 `main` 后，再在 TauriTavern 通过 Git URL 安装；不手工复制部署、不自动合并。** PR #1 已合并安装，2026-11-17 用户确认插件与 ComfyUI 均可正常生图，已建立[冻结基线记录](<BASELINE-2026-11-17.md>)。安装 URL 为 `https://github.com/VegarGG/witch-paintbox-comfy-UI`，分支填 `main` 或留空使用默认分支；后续功能仍须先审核合并。完整步骤、使用与回滚见[中文实验说明](<README-zh.md>)，剩余验收与资源缺口见[验证边界](<qa/gaps.md>)，开发现场仅看[唯一续接入口](<NEXT.md>)。
 
-用户已手动验证官方模板关闭 prompt enhancer 后可以出图，截图为1024×1024、任务约181.13秒；这是模型组合的用户侧证据，不是本 PR 的 API 图或酒馆端到端验收。保留本实验无 TextGenerate 的基础设计，不能把离线测试当真实宿主通过。
+本机中性长文本对照已捕获采样阶段非有限值，切换 split attention 后恢复全有限并正常出图，随后用户确认插件路径也跑通。当前实际profile与内置默认编码器不同，不能泛化至所有模型或长度；准确版本、模型摘要、CORS/split启动参数及仍启用的临时探针见[冻结记录](<BASELINE-2026-11-17.md>)。保留无 TextGenerate 的基础设计，用户实测与离线合同分别记录。
 
 `pnpm test`（有 npm 的终端也可用 `npm test`）现在先真实构建，再运行原测试与所有任务 QA；也可运行 `bash qa/run-all.sh`。脚本不递归依赖 npm，兼容本机仅 Node+pnpm 的运行时，不新增运行时依赖。
 

@@ -408,6 +408,26 @@ function directNativeIdentity(context: ChatHost) {
     ? ['group', String(context.groupId)] : ['character', character!.avatar]) };
 }
 
+/** Read native floor identities only; no permission to save, generate, or modify a message. */
+export function readNativeDirectDisplaySources(ids: readonly number[]) {
+  if (isSifangEnvironment()) return null;
+  const context = host();
+  const { scope } = directNativeIdentity(context);
+  const id = chatId(context);
+  const identities = historyIdentities(context.chat);
+  const sources = new Map<number, { message: object; source: DirectImageSource }>();
+  for (const messageId of ids) {
+    const message = context.chat[messageId], historyId = identities.get(messageId);
+    if (!historyId || !message || message.is_user || message.is_system || typeof message.mes !== 'string'
+      || message.swipes !== undefined && !Array.isArray(message.swipes)) continue;
+    try {
+      sources.set(messageId, { message, source: { scope, chatId: id, messageId, swipeId: currentSwipe(message),
+        historyId, turnId: null, text: message.mes } });
+    } catch { /* A partially rendered swipe has no safe display identity. */ }
+  }
+  return { chat: context.chat, sources };
+}
+
 /**
  * Pin a selected native AI floor before the first await. Any observed host activity permanently
  * invalidates this capture, even if the same chat/text is restored before an async operation ends.

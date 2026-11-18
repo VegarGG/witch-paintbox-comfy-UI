@@ -7,8 +7,8 @@ import ts from 'typescript';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const text = name => readFile(path.join(root, name), 'utf8');
-const modules = ['comfy-types', 'comfy-workflow', 'comfyui', 'comfy-config', 'direct-image', 'direct-image-runner', 'direct-image-view'];
-const required = ['README.md', 'README-zh.md', 'CHANGELOG.md', 'NEXT.md', 'qa/gaps.md', 'qa/run-all.sh',
+const modules = ['comfy-types', 'comfy-workflow', 'comfyui', 'comfy-config', 'direct-image', 'direct-image-runner', 'direct-image-view', 'direct-image-inline'];
+const required = ['README.md', 'README-zh.md', 'CHANGELOG.md', 'NEXT.md', 'BASELINE-2026-11-17.md', 'qa/gaps.md', 'qa/run-all.sh',
   'workflows/README.md', 'workflows/dirty-moss-v2.ui.json', 'workflows/dirty-moss-v2.api.json', 'workflows/dirty-moss-v2.bindings.json',
   ...['T-01/workflow.test.mjs', 'T-01/protocol.test.mjs', 'T-01/run.sh', 'T-02/settings.test.mjs', 'T-02/direct.test.mjs', 'T-02/run.sh', 'T-03/delivery.test.mjs', 'T-03/run.sh'].map(name => `qa/${name}`),
   ...modules.flatMap(name => [`src/${name}.ts`, `dist/${name}.js`])];
@@ -62,7 +62,7 @@ test('delivered dist is byte-for-byte the real strict project TypeScript output,
 
 test('user docs distinguish local install plans, live-test gaps, CPU enhancer observations and rollback', async () => {
   const guide = await text('README-zh.md'), gaps = await text('qa/gaps.md'), next = await text('NEXT.md');
-  for (const marker of ['尚未安装', '回滚', 'CORS', 'sessionStorage', 'TextGenerate', '6000', '不改聊天']) assert.ok(guide.includes(marker), `guide must discuss ${marker}`);
+  for (const marker of ['BASELINE-2026-11-17.md', '回滚', 'CORS', 'sessionStorage', 'TextGenerate', '6000', '不改聊天']) assert.ok(guide.includes(marker), `guide must discuss ${marker}`);
   for (const marker of ['未测', '峰值', 'Tauri', '独立', '中止']) assert.ok(gaps.includes(marker), `gaps must discuss ${marker}`);
   assert.ok(next.includes('唯一续接入口'));
   const readme = await text('README.md'); assert.match(readme, /README-zh\.md/); assert.match(readme, /NEXT\.md/);
@@ -78,7 +78,7 @@ test('Tauri installation uses the user fork Git URL only after user review and m
 });
 
 test('published experiment documents contain no private host paths or links to ignored local controls', async () => {
-  for (const file of ['README.md', 'README-zh.md', 'CHANGELOG.md', 'NEXT.md', 'qa/gaps.md', 'workflows/README.md']) {
+  for (const file of ['README.md', 'README-zh.md', 'CHANGELOG.md', 'NEXT.md', 'BASELINE-2026-11-17.md', 'qa/gaps.md', 'workflows/README.md']) {
     const content = await text(file);
     assert.doesNotMatch(content, /\/(?:Users|var\/folders|private\/var)\//, `${file}: private host path`);
     assert.doesNotMatch(content, /\]\(<?(?:\/|(?:\.\.\/)?\.dsh-crew\/)/, `${file}: non-portable local link`);
@@ -87,7 +87,7 @@ test('published experiment documents contain no private host paths or links to i
 });
 
 test('new experiment documentation links resolve inside the repository without requiring host-only model paths', async () => {
-  for (const file of ['README-zh.md', 'qa/gaps.md', 'workflows/README.md']) {
+  for (const file of ['README-zh.md', 'BASELINE-2026-11-17.md', 'qa/gaps.md', 'workflows/README.md']) {
     const content = await text(file);
     for (const match of content.matchAll(/\]\(<?([^\s)>]+)>?\)/g)) {
       const target = match[1].split('#')[0];

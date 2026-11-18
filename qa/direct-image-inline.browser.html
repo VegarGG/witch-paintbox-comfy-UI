@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Direct image real DOM regression</title>
+<div id="chat"><div class="mes" mesid="0" swipeid="0"><div class="mes_text">Neutral fixture</div></div></div>
+<script type="module">
+import { bindDirectImageInline } from '/dist/direct-image-inline.js';
+import { directImageHistoryKeyForSource } from '/dist/direct-image.js';
+
+const check = (condition, message) => { if (!condition) throw new Error(message); };
+const until = async (predicate, message) => {
+  for (let i = 0; i < 150; i++) {
+    if (predicate()) return;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  throw new Error(message);
+};
+
+let result = 'OK';
+const controller = new AbortController();
+const attachShadow = Element.prototype.attachShadow;
+const roots = new WeakMap();
+const failures = [];
+// Observe the closed root while still invoking the real platform implementation and its validation.
+Element.prototype.attachShadow = function (options) {
+  try {
+    const root = attachShadow.call(this, options);
+    roots.set(this, root);
+    return root;
+  } catch (error) {
+    failures.push(`${this.localName}: ${error.name}`);
+    throw error;
+  }
+};
+try {
+  const source = { scope: '["character","neutral.png"]', chatId: 'test', messageId: 0,
+    swipeId: 0, historyId: 'stable', turnId: null, text: 'Neutral fixture' };
+  const markerKey = await directImageHistoryKeyForSource(source);
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=';
+  const blob = new Blob([Uint8Array.from(atob(png), c => c.charCodeAt(0))], { type: 'image/png' });
+  const chat = [];
+  const message = {};
+  bindDirectImageInline(controller.signal, {
+    read: ids => ({ chat, sources: new Map(ids.includes(0) ? [[0, { message, source }]] : []) }),
+    load: async key => key === markerKey ? [{ markerKey, provider: 'comfyui', blob }] : [],
+    watch: () => () => {},
+    watchHistory: () => () => {},
+  });
+  const selector = '.witch-paintbox-direct-image';
+  await until(() => document.querySelector(selector) || failures.length, 'renderer did not mount');
+  check(!failures.length, `browser rejected shadow host: ${failures.join(', ')}`);
+  const host = document.querySelector(selector);
+  const text = document.querySelector('.mes_text');
+  check(text.textContent === source.text && text.nextElementSibling === host, 'host was not appended beside untouched body');
+  check(!host.shadowRoot && roots.get(host)?.mode === 'closed', 'expected closed shadow rendering');
+  const image = roots.get(host).querySelector('figure > img');
+  check(image?.src.startsWith('blob:'), 'expected Blob image in semantic figure');
+  await until(() => image.naturalWidth === 1, 'test image failed to decode');
+  check(!host.cloneNode(true).querySelector('img'), 'message subtree clone must not copy image');
+  const url = image.src;
+  controller.abort();
+  check(!host.isConnected && !image.hasAttribute('src'), 'teardown must remove host and image source');
+  let revoked = false;
+  try { await fetch(url); } catch { revoked = true; }
+  check(revoked, 'teardown must revoke stored image URL');
+} catch (error) {
+  result = error.stack || String(error);
+} finally {
+  controller.abort();
+  Element.prototype.attachShadow = attachShadow;
+  await fetch('/result', { method: 'POST', body: result });
+}
+</script>
+</html>
