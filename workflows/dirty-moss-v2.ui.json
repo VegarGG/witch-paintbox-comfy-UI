@@ -328,7 +328,7 @@
       "widgets_values": [
         0,
         "fixed",
-        25,
+        20,
         2.5,
         "er_sde",
         "simple",
@@ -336,7 +336,7 @@
       ],
       "widgets_values_named": {
         "seed": 0,
-        "steps": 25,
+        "steps": 20,
         "cfg": 2.5,
         "sampler_name": "er_sde",
         "scheduler": "simple",

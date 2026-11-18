@@ -259,12 +259,22 @@ export async function loadAnchors() {
     }) : await transact('readonly', '读取', store => store.getAll());
     return validateAnchorLibrary(anchors).sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
 }
+/** Read the same library without fetching portraits or publishing a new native manifest. */
+export async function loadAnchorText() {
+    if (getHostStore())
+        return withHostLock(hostLock, async () => {
+            const records = await nativeManifest(false);
+            return records.map(({ portraitKey: _portraitKey, ...fields }) => fields);
+        });
+    const records = await transact('readonly', '读取', store => store.getAll());
+    return validateAnchorLibrary(records).map(({ portrait: _portrait, ...fields }) => fields);
+}
 /** Existing native manifests, including an empty library, always take precedence over IndexedDB. */
-async function nativeManifest() {
+async function nativeManifest(migrate = true) {
     const stored = await readHostJson('manifest', hostTable);
     if (!stored.found) {
         const old = validateAnchorLibrary(await transact('readonly', '迁移读取', store => store.getAll()));
-        return publishAnchors(old);
+        return migrate ? publishAnchors(old) : old.map(({ portrait: _portrait, ...fields }) => ({ ...fields, portraitKey: null }));
     }
     const value = stored.value;
     if (!value || value.version !== 1 || !Array.isArray(value.anchors)) {

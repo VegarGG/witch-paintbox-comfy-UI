@@ -21,9 +21,10 @@ export interface DirectImageTask {
 
 const MAX_PROMPT_LENGTH = 6000;
 const protectedTags = new Set([
-  'think', 'thinking', 'choicelist', 'options', 'option', 'summary', 'comment', 'updatevariable',
+  'think', 'thinking', 'think_nya', 'thought', 'choicelist', 'options', 'option', 'summary', 'comment', 'updatevariable',
   'script', 'style', 'pre', 'code', 'textarea', 'title', 'select', 'button',
 ]);
+const voidTags = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
 
 interface Tag {
   name: string;
@@ -207,12 +208,25 @@ function withoutOptionPanels(text: string): string {
  * Unclosed/mismatched protected blocks stay excluded through EOF. No DOM or host state is consulted.
  */
 export function extractDirectNarrative(text: string): string {
+  return scanDirectNarrative(text, false).narrative;
+}
+
+/** Find one optional, final, top-level preset comment without interpreting the surrounding text as HTML. */
+export function readDirectPresetPayload(text: string): { narrative: string; payload: string | null; malformed: boolean } {
+  return scanDirectNarrative(text, true);
+}
+
+function scanDirectNarrative(text: string, readPreset: boolean): { narrative: string; payload: string | null; malformed: boolean } {
   if (typeof text !== 'string') throw new Error('直出来源正文必须是字符串。');
   const outside: string[] = [];
   const story: string[] = [];
   const hidden: string[] = [];
+  const wrappers: string[] = [];
   let storyDepth = 0;
   let hasStory = false;
+  let payload: string | null = null;
+  let seen = false;
+  let malformed = false;
   let at = 0;
   let plainStart = 0;
   const append = (end: number) => {
@@ -229,7 +243,20 @@ export function extractDirectNarrative(text: string): string {
     if (text[at] === '`') { skip(inlineCodeEnd(text, at)); continue; }
     if (text.startsWith('![', at)) { skip(markdownImageEnd(text, at)); continue; }
     if (text[at] !== '<') { at++; continue; }
-    if (text.startsWith('<!--', at)) { skip(commentEnd(text, at)); continue; }
+    if (text.startsWith('<!--', at)) {
+      const end = commentEnd(text, at);
+      const marker = '<!-- WP-FRAME-V1 ';
+      if (readPreset && !hidden.length && !wrappers.length && text.startsWith(marker, at)) {
+        const close = text.indexOf('-->', at + marker.length);
+        const ownLine = at === 0 || text[at - 1] === '\n' || text[at - 1] === '\r';
+        if (seen || close < 0 || close + 3 !== end || !ownLine || end - at > 12_032
+          || /[\r\n\u2028\u2029]/.test(text.slice(at, end)) || text.slice(end).trim()) {
+          malformed = true;
+        } else payload = text.slice(at + marker.length, close).trim();
+        seen = true;
+      }
+      skip(end); continue;
+    }
     const declarationEnd = text.startsWith('<![CDATA[', at) ? ']]>' : text.startsWith('<?', at) ? '?>' : '';
     if (declarationEnd) {
       const end = text.indexOf(declarationEnd, at + 2);
@@ -251,15 +278,23 @@ export function extractDirectNarrative(text: string): string {
       } else if (!tag.selfClosing && !(tag.name === 'img' && hasImageSource(text, tag))) {
         hidden.push(tag.name);
       }
-    } else if (tag.name === 'storytext' && !hidden.length) {
-      if (!tag.closing) { hasStory = true; if (tag.complete && !tag.selfClosing) storyDepth++; }
-      else if (tag.validClose && storyDepth) storyDepth--;
+    } else if (!hidden.length) {
+      if (tag.name === 'storytext') {
+        if (!tag.closing) { hasStory = true; if (tag.complete && !tag.selfClosing) storyDepth++; }
+        else if (tag.validClose && storyDepth) storyDepth--;
+      }
+      // An unclosed wrapper (including <game>, which is visible prose) blocks only the footer.
+      // Be conservative about malformed nesting rather than inferring DOM auto-closing rules.
+      if (readPreset && !voidTags.has(tag.name)) {
+        if (!tag.closing && !tag.selfClosing) wrappers.push(tag.name);
+        else if (tag.validClose && wrappers.at(-1) === tag.name) wrappers.pop();
+      }
     }
     at = tag.end;
     plainStart = at;
   }
   append(text.length);
-  return withoutOptionPanels((hasStory ? story : outside).join(''));
+  return { narrative: withoutOptionPanels((hasStory ? story : outside).join('')), payload: malformed ? null : payload, malformed };
 }
 
 function snapshotSource(value: DirectImageSource): Readonly<DirectImageSource> {
@@ -341,6 +376,12 @@ export async function assertDirectImageCurrent(task: DirectImageTask, current: D
     || snapshot.text !== previous.text || await sourceFingerprint(snapshot.text) !== task.fingerprint) {
     throw new Error('直出来源已改变或任务已失效，请重新选择当前 AI 正文。');
   }
+}
+
+/** Read the existing key without preparing a prompt, minting a task, or authorizing generation. */
+export async function directImageHistoryKeyForSource(value: DirectImageSource): Promise<string> {
+  const source = snapshotSource(value);
+  return historyKey(source, await sourceFingerprint(source.text));
 }
 
 export function directImageHistoryKey(task: DirectImageTask): string {

@@ -4,3 +4,5 @@ import '../../tests/direct-image.test.mjs';
 import '../../tests/direct-host.test.mjs';
 import '../../tests/direct-runner.test.mjs';
 import '../../tests/direct-view.test.mjs';
+import '../../tests/direct-keyframe-plan.test.mjs';
+import '../../tests/direct-card-profile.test.mjs';

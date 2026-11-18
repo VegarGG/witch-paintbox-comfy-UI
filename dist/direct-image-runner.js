@@ -1,10 +1,12 @@
 import { captureDirectAssistant, watchChatRendering } from './chat-host.js';
-import { assertDirectImageCurrent, directImageHistoryKey, extractDirectNarrative, prepareDirectImage } from './direct-image.js';
+import { assertDirectImageCurrent, directImageHistoryKey, directImageHistoryKeyForSource, extractDirectNarrative, prepareDirectImage, readDirectPresetPayload } from './direct-image.js';
 import { loadImageSettings, validateImageSettings } from './image-settings.js';
+import { applyComfyModelPreset } from './comfy-model-presets.js';
+import { parseDirectKeyframeSuggestions, suggestDirectKeyframes } from './direct-keyframe-plan.js';
 import { generatePreparedImage } from './image-provider.js';
 import { loadImageHistory, saveImageHistory, validateImageHistoryEntry } from './image-history.js';
 const defaults = {
-    capture: captureDirectAssistant, settings: loadImageSettings, generate: generatePreparedImage,
+    capture: captureDirectAssistant, settings: loadImageSettings, generate: generatePreparedImage, suggest: suggestDirectKeyframes,
     load: loadImageHistory, save: saveImageHistory, watch: callback => watchChatRendering(() => callback()), now: () => Date.now(),
 };
 /** Manual, local-Comfy-only path. This controller never acquires chat write authorization. */
@@ -64,7 +66,12 @@ export class DirectImageController {
     invalidate() {
         this.releaseSelection(true);
         this.stopActive();
-        this.report('聊天或来源已改变，请重新选择当前 AI 正文；服务端已提交的任务可能继续。', true);
+        const message = '聊天或来源已改变，请重新选择当前 AI 正文；已提交的服务端任务可能继续。';
+        this.report(message, true);
+        try {
+            this.options.onSourceInvalidated?.(message);
+        }
+        catch { /* Already invalidated. */ }
     }
     async run(message, work) {
         if (this.disposed)
@@ -97,21 +104,47 @@ export class DirectImageController {
             throw new Error('请先选择并确认一个有效的 AI 正文来源。');
         return this.selected;
     }
+    /** Recheck the pinned source for explicit, synchronous local reads or a card-profile save. */
+    confirmSelectedSource() {
+        const capture = this.capture();
+        try {
+            return capture.assertCurrentSync();
+        }
+        catch (error) {
+            if (this.selected === capture)
+                this.invalidate();
+            throw error;
+        }
+    }
     verifySync(operation, capture) {
         this.check(operation);
-        capture.assertCurrentSync();
+        try {
+            capture.assertCurrentSync();
+        }
+        catch (error) {
+            if (this.selected === capture && this.active === operation)
+                this.invalidate();
+            throw error;
+        }
         this.check(operation);
     }
     async verify(operation, capture, task) {
         this.check(operation);
-        const current = await capture.assertCurrent();
-        this.check(operation);
-        if (task) {
-            await assertDirectImageCurrent(task, current);
+        try {
+            const current = await capture.assertCurrent();
             this.check(operation);
+            if (task) {
+                await assertDirectImageCurrent(task, current);
+                this.check(operation);
+            }
+            // Hashing yields. Recheck the live host, not just the pre-hash snapshot and operation token.
+            this.verifySync(operation, capture);
         }
-        // Hashing yields. Recheck the live host, not just the pre-hash snapshot and operation token.
-        this.verifySync(operation, capture);
+        catch (error) {
+            if (this.selected === capture && this.active === operation)
+                this.invalidate();
+            throw error;
+        }
     }
     /** Capture one actual AI floor. No image request, setting change, or automatic truncation. */
     async select(source) {
@@ -135,8 +168,7 @@ export class DirectImageController {
                 }
                 this.stopWatch = stop;
                 this.check(operation);
-                this.report(preview.length > 6000 ? '正文已完整读取，超过 6000 字符；请手动编辑候选，不会自动截取末尾。'
-                    : '正文已读取。请核对候选与负面词，再明确生成一张；没有调用文本模型。');
+                this.report('正文已完整读取；没有调用文本模型。');
                 return preview;
             }
             catch (error) {
@@ -148,26 +180,51 @@ export class DirectImageController {
             }
         });
     }
+    /** Optional metadata emitted by the main reply itself; read only from the pinned raw source. */
+    readPresetKeyframe() {
+        const source = this.confirmSelectedSource();
+        const { narrative, payload, malformed } = readDirectPresetPayload(source.text);
+        if (malformed)
+            throw new Error('预设附段不在正文之外的最后一行、重复或不完整；请手选片段。');
+        if (payload === null)
+            return null;
+        try {
+            return parseDirectKeyframeSuggestions(payload, narrative, 1)[0] ?? null;
+        }
+        catch {
+            throw new Error('预设关键帧格式或原文引文不符合约定；请手选片段。');
+        }
+    }
+    /** Separate explicit text-only action. Never prepares an image task, loads other context or auto-submits a frame. */
+    async suggestKeyframes(count) {
+        return this.run('正在通过酒馆主 API 提炼关键帧草稿（未提交生图）…', async (operation) => {
+            const capture = this.capture();
+            await this.verify(operation, capture);
+            const cleaned = extractDirectNarrative(capture.source.text);
+            this.verifySync(operation, capture);
+            const frames = await this.dependencies.suggest(cleaned, count, operation.abort.signal);
+            await this.verify(operation, capture);
+            return frames;
+        });
+    }
     /** The original complete source, not an edited candidate or the floor index, owns the history key. */
-    async loadHistory(prompt) {
+    async loadHistory() {
         return this.run('正在只读加载此来源的图片历史…', async (operation) => {
             const capture = this.capture();
             await this.verify(operation, capture);
-            const task = await prepareDirectImage(capture.source, prompt);
-            this.check(operation);
-            await this.verify(operation, capture, task);
-            const key = directImageHistoryKey(task);
+            const key = await directImageHistoryKeyForSource(capture.source);
+            this.verifySync(operation, capture);
             const entries = await this.dependencies.load(key);
             this.check(operation);
-            await this.verify(operation, capture, task);
+            await this.verify(operation, capture);
             const images = entries.filter(entry => entry.markerKey === key && entry.provider === 'comfyui').map(validateImageHistoryEntry);
             this.report(images.length ? `已读取此来源的 ${images.length} 张图片；没有重新生成。` : '此来源还没有已保存图片；读取历史不会生成。');
             return images;
         });
     }
-    /** Exactly one explicit request; no anchor expansion, text model, provider fallback or retry. */
-    async generate(prompt, negative) {
-        return this.run('正在核对来源与已保存的 ComfyUI 配置…', async (operation) => {
+    /** Exactly one explicit local image request; no text model, provider fallback or retry. */
+    async generate(prompt, negative, preset = 'saved') {
+        return this.run('正在核对来源与本次 ComfyUI 配置…', async (operation) => {
             const capture = this.capture();
             if (typeof negative !== 'string' || negative.length > 65_536)
                 throw new Error('负面词无效或过长，请手动核对。');
@@ -176,6 +233,8 @@ export class DirectImageController {
             if (loaded.provider !== 'comfyui')
                 throw new Error('正文直出仅使用 ComfyUI 配置，不能改用当前云端提供方。');
             const settings = validateImageSettings(structuredClone(loaded));
+            if (preset !== 'saved')
+                settings.comfy = applyComfyModelPreset(settings.comfy, preset);
             await this.verify(operation, capture);
             const task = await prepareDirectImage(capture.source, prompt);
             this.check(operation);

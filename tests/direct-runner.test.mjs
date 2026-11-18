@@ -6,6 +6,8 @@ import vm from 'node:vm';
 import * as core from '../dist/direct-image.js';
 import * as settings from '../dist/image-settings.js';
 import * as history from '../dist/image-history.js';
+import * as presets from '../dist/comfy-model-presets.js';
+import { parseDirectKeyframeSuggestions } from '../dist/direct-keyframe-plan.js';
 
 const source = (extra = {}) => ({ scope: '["character","test.png"]', chatId: 'chat-A', messageId: 6,
   historyId: 'stable-reply-A', swipeId: 0, turnId: null, text: '<StoryText>窗边的陶杯。\n灯光照在桌面。</StoryText><think>不发送隐藏推理</think>', ...extra });
@@ -19,6 +21,8 @@ async function runnerClass() {
   const exports = {
     './direct-image.js': core, './image-settings.js': settings, './image-history.js': history,
     './image-provider.js': { generatePreparedImage: forbidden },
+    './comfy-model-presets.js': presets,
+    './direct-keyframe-plan.js': { parseDirectKeyframeSuggestions, suggestDirectKeyframes: forbidden },
     './chat-host.js': { captureDirectAssistant: forbidden, watchChatRendering: forbidden },
   };
   const mod = new vm.SourceTextModule(code, { context });
@@ -30,7 +34,7 @@ async function runnerClass() {
 }
 async function fixture(options = {}) {
   const Controller = await runnerClass();
-  const calls = { capture: [], settings: [], generate: [], save: [], load: [], status: [], disposed: 0, checks: 0, unwatch: 0 };
+  const calls = { capture: [], settings: [], generate: [], suggest: [], save: [], load: [], status: [], invalidated: [], disposed: 0, checks: 0, unwatch: 0 };
   const config = settings.defaultImageSettings('comfyui'); config.positive = '不应自动添加的设置正词';
   let current = source(), watcher = null;
   const dependencies = {
@@ -48,6 +52,12 @@ async function fixture(options = {}) {
       }, dispose() { if (!disposed) calls.disposed++; disposed = true; } };
     },
     settings: provider => { calls.settings.push(provider); return config; },
+    suggest: async (body, count, signal) => {
+      calls.suggest.push({ body, count, signal });
+      if (options.suggestGate) return options.suggestGate.promise;
+      if (options.suggestError) throw options.suggestError;
+      return [{ evidence: '窗边的陶杯。', scene: '光打在窗边的陶杯上。' }];
+    },
     generate: async (value, prompt, signal, progress) => {
       calls.generate.push({ config: value, prompt, signal }); progress?.({ state: 'queued', position: 1 });
       if (options.generateGate) await options.generateGate.promise;
@@ -60,7 +70,8 @@ async function fixture(options = {}) {
     watch: callback => { watcher = callback; options.watchHook?.(callback); return () => { watcher = null; calls.unwatch++; options.onUnwatch?.(); }; },
     now: () => 1000,
   };
-  const controller = new Controller({ onStatus: (...args) => { calls.status.push(args); if (options.statusThrows) throw new Error('view failure'); } }, dependencies);
+  const controller = new Controller({ onSourceInvalidated: message => calls.invalidated.push(message),
+    onStatus: (...args) => { calls.status.push(args); if (options.statusThrows) throw new Error('view failure'); } }, dependencies);
   return { controller, calls, config, get current() { return current; }, set current(value) { current = value; }, invalidate() { watcher?.(); } };
 }
 async function until(check) { for (let count = 0; count < 100; count++) { if (check()) return; await new Promise(resolve => setImmediate(resolve)); } assert.fail('offline operation never reached expected stage'); }
@@ -68,7 +79,8 @@ async function until(check) { for (let count = 0; count < 100; count++) { if (ch
 test('selection is read-only, returns the entire visible prose and never starts an image or text model', async () => {
   const f = await fixture(); const original = JSON.stringify(f.current);
   assert.equal(await f.controller.select(f.current), '窗边的陶杯。\n灯光照在桌面。');
-  assert.equal(JSON.stringify(f.current), original); assert.equal(f.calls.generate.length, 0); assert.equal(f.calls.save.length, 0); assert.equal(f.calls.load.length, 0);
+  assert.equal(JSON.stringify(f.current), original); assert.equal(f.calls.generate.length, 0); assert.equal(f.calls.suggest.length, 0);
+  assert.equal(f.calls.save.length, 0); assert.equal(f.calls.load.length, 0);
   assert.equal(f.controller.busy, false); f.controller.dispose(); assert.equal(f.calls.disposed, 1); assert.equal(f.calls.unwatch, 1);
 });
 
@@ -218,4 +230,57 @@ test('disposing during source capture releases the late capture and cannot reope
   const pending = f.controller.select(f.current); const rejected = assert.rejects(pending, /取消|失效|改变/);
   f.controller.dispose(); gate.resolve(); await rejected; assert.equal(f.calls.disposed, 1);
   await assert.rejects(f.controller.select(source()), /关闭|失效|结束/); assert.equal(f.calls.capture.length, 1);
+});
+
+test('explicit planning sends the cleaned selected floor, not other data, and never builds an image task', async () => {
+  const f = await fixture(); await f.controller.select(f.current);
+  assert.equal((await f.controller.suggestKeyframes(2))[0].evidence, '窗边的陶杯。');
+  assert.equal(f.calls.suggest.length, 1); assert.equal(f.calls.suggest[0].body, '窗边的陶杯。\n灯光照在桌面。');
+  assert.equal(f.calls.suggest[0].count, 2); assert.equal(f.calls.suggest[0].signal.aborted, false);
+  assert.equal(f.calls.settings.length + f.calls.generate.length + f.calls.save.length + f.calls.load.length, 0);
+});
+
+test('a malformed API result does not invalidate the source or oblige an API retry to generate manually', async () => {
+  const f = await fixture({ suggestError: new Error('格式无效') }); await f.controller.select(f.current);
+  await assert.rejects(f.controller.suggestKeyframes(1), /格式/); assert.equal(f.calls.invalidated.length, 0);
+  const result = await f.controller.generate('经手选和核对的画面', '', 'realistic');
+  assert.equal(f.calls.suggest.length, 1); assert.equal(f.calls.generate.length, 1);
+  const cfg = f.calls.generate[0].config.comfy;
+  assert.equal(cfg.parameters.steps, 20);
+  assert.equal(Object.values(cfg.workflow).find(node => node.class_type === 'CLIPLoader').inputs.clip_name,
+    'qwen3.5_9b_uncensored_int8_convrot.safetensors');
+  assert.equal(f.config.comfy.workflow['2'].inputs.clip_name, 'qwen3.5_9b_w4a8_gptq.safetensors');
+  await f.controller.loadHistory(); assert.equal(f.calls.load[0], result.markerKey);
+});
+
+test('switching swipes during planning aborts the request and ignores a late suggestion', async () => {
+  const gate = deferred(), f = await fixture({ suggestGate: gate }); await f.controller.select(f.current);
+  const pending = f.controller.suggestKeyframes(1), rejection = assert.rejects(pending, /取消|失效|改变/);
+  await until(() => f.calls.suggest.length === 1); f.invalidate();
+  gate.resolve([{ evidence: '窗边的陶杯。', scene: '迟到绝不提交。' }]); await rejection;
+  assert.equal(f.calls.suggest[0].signal.aborted, true); assert.equal(f.calls.invalidated.length, 1);
+  assert.equal(f.calls.generate.length + f.calls.save.length, 0);
+});
+
+test('preset metadata is read only as an optional grounded draft; raw history bytes remain authoritative', async () => {
+  const append = value => `\n<!-- WP-FRAME-V1 ${JSON.stringify(value)} -->`;
+  const f = await fixture();
+  const base = '<think_nya>内部推理</think_nya><game>窗边的陶杯。\n灯光照在桌面。</game>\n<summary>不使用此摘要</summary><thought>不可提炼的位置</thought><UpdateVariable>{"x":1}</UpdateVariable>';
+  const data = [{ evidence: '窗边的陶杯。', scene: '短发少女在窗口举着陶杯。' }];
+  f.current = source({ text: base + append(data) });
+  assert.equal(await f.controller.select(f.current), '窗边的陶杯。\n灯光照在桌面。\n\n');
+  assert.deepEqual(f.controller.readPresetKeyframe(), data[0]);
+  assert.equal(f.calls.suggest.length + f.calls.generate.length + f.calls.save.length, 0);
+  await f.controller.loadHistory(); assert.equal(f.calls.load[0], await core.directImageHistoryKeyForSource(f.current));
+  assert.notEqual(f.calls.load[0], await core.directImageHistoryKeyForSource(source()));
+  for (const tail of [append([{ ...data[0], evidence: '不可提炼的位置' }]), append([...data, ...data]),
+    append(data) + '\n多余正文', append(data) + append(data), append(data).slice(0, -1), '\n    ' + append(data).slice(1)]) {
+    f.current = source({ text: base + tail }); await f.controller.select(f.current);
+    assert.throws(() => f.controller.readPresetKeyframe(), /格式|引文|最后一行/);
+  }
+  for (const text of [base + '\n<summary>' + append(data) + '\n</summary>', '<game>窗边的陶杯。' + append(data),
+    '<div><game>窗边的陶杯。</game>' + append(data), base + '\n```html' + append(data) + '\n```']) {
+    f.current = source({ text });
+    await f.controller.select(f.current); assert.equal(f.controller.readPresetKeyframe(), null);
+  }
 });
