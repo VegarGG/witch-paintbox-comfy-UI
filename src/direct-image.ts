@@ -343,6 +343,12 @@ export async function assertDirectImageCurrent(task: DirectImageTask, current: D
   }
 }
 
+/** Read the existing key without preparing a prompt, minting a task, or authorizing generation. */
+export async function directImageHistoryKeyForSource(value: DirectImageSource): Promise<string> {
+  const source = snapshotSource(value);
+  return historyKey(source, await sourceFingerprint(source.text));
+}
+
 export function directImageHistoryKey(task: DirectImageTask): string {
   return historyKey(task.source, task.fingerprint);
 }

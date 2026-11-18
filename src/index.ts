@@ -2,6 +2,7 @@ import { IMAGE_PROVIDERS } from './image-settings.js';
 import { bindLauncher } from './launcher.js';
 import { bindLauncherMenu } from './launcher-menu.js';
 import { bindChatImages } from './chat-images.js';
+import { bindDirectImageInline } from './direct-image-inline.js';
 import { ImageConfig } from './image-config.js';
 import { ModelConfig } from './model-config.js';
 import { AnchorConfig } from './anchor-config.js';
@@ -315,7 +316,10 @@ async function mount() {
     host.hidden = false;
     bindSettingsEntry(button => openPanel(settings.rememberPage ? settings.lastPage : 'guide', button), signal);
     if (nativeReady) bindSifangImages(root, signal);
-    else if (!isSifangEnvironment()) bindChatImages(signal);
+    else if (!isSifangEnvironment()) {
+      bindChatImages(signal);
+      bindDirectImageInline(signal);
+    }
     if (nativeError) {
       const toast = (window as Window & { toastr?: { error(message: string): void } }).toastr;
       if (toast) toast.error(nativeError);

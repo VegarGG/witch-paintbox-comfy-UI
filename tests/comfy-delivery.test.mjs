@@ -7,7 +7,7 @@ import ts from 'typescript';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const text = name => readFile(path.join(root, name), 'utf8');
-const modules = ['comfy-types', 'comfy-workflow', 'comfyui', 'comfy-config', 'direct-image', 'direct-image-runner', 'direct-image-view'];
+const modules = ['comfy-types', 'comfy-workflow', 'comfyui', 'comfy-config', 'direct-image', 'direct-image-runner', 'direct-image-view', 'direct-image-inline'];
 const required = ['README.md', 'README-zh.md', 'CHANGELOG.md', 'NEXT.md', 'BASELINE-2026-11-17.md', 'qa/gaps.md', 'qa/run-all.sh',
   'workflows/README.md', 'workflows/dirty-moss-v2.ui.json', 'workflows/dirty-moss-v2.api.json', 'workflows/dirty-moss-v2.bindings.json',
   ...['T-01/workflow.test.mjs', 'T-01/protocol.test.mjs', 'T-01/run.sh', 'T-02/settings.test.mjs', 'T-02/direct.test.mjs', 'T-02/run.sh', 'T-03/delivery.test.mjs', 'T-03/run.sh'].map(name => `qa/${name}`),

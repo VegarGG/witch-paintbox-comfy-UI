@@ -393,6 +393,11 @@ export async function assertDirectImageCurrent(task, current) {
         throw new Error('直出来源已改变或任务已失效，请重新选择当前 AI 正文。');
     }
 }
+/** Read the existing key without preparing a prompt, minting a task, or authorizing generation. */
+export async function directImageHistoryKeyForSource(value) {
+    const source = snapshotSource(value);
+    return historyKey(source, await sourceFingerprint(source.text));
+}
 export function directImageHistoryKey(task) {
     return historyKey(task.source, task.fingerprint);
 }
