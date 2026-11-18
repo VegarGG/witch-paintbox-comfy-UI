@@ -88,9 +88,11 @@ const defaults = {
         return () => observer.disconnect();
     },
     mount(floor, entry, owned) {
+        const host = document.createElement('div');
+        host.className = 'witch-paintbox-direct-image';
+        host.style.margin = '0.75em 0 0';
         const figure = document.createElement('figure');
-        figure.className = 'witch-paintbox-direct-image';
-        figure.style.margin = '0.75em 0 0';
+        figure.style.margin = '0';
         const caption = document.createElement('figcaption');
         caption.textContent = '正文直出 · 本地历史';
         const image = document.createElement('img');
@@ -98,23 +100,24 @@ const defaults = {
         image.loading = 'lazy';
         image.decoding = 'async';
         image.style.cssText = 'display:block;max-width:100%;max-height:70vh;width:auto;height:auto;object-fit:contain';
-        owned.add(figure);
-        // Native extensions may clone message DOM; a clone must not carry old pixels or blob URLs.
-        figure.attachShadow({ mode: 'closed' }).append(caption, image);
+        owned.add(host);
+        // Keep pixels out of native DOM clones. The div is a valid shadow host; figure is not.
+        figure.append(caption, image);
+        host.attachShadow({ mode: 'closed' }).append(figure);
         const url = URL.createObjectURL(entry.blob);
         let disposed = false;
         const dispose = () => {
             if (disposed)
                 return;
             disposed = true;
-            figure.remove();
+            host.remove();
             image.removeAttribute('src');
             URL.revokeObjectURL(url);
         };
         image.addEventListener('error', dispose, { once: true });
         try {
             image.src = url;
-            floor.text.after(figure);
+            floor.text.after(host);
         }
         catch (error) {
             dispose();

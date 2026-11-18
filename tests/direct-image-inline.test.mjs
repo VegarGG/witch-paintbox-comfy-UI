@@ -148,9 +148,11 @@ test('default renderer appends a sibling with protected blob pixels and revokes 
   });
   const children = [];
   Object.defineProperty(globalThis, 'document', { configurable: true, value: {
-    createElement: tag => ({ tag, style: {}, attachShadow: ({ mode }) => {
-      assert.equal(mode, 'closed'); return { append: (...nodes) => children.push(...nodes) };
-    }, addEventListener() {}, removeAttribute(name) { delete this[name]; }, remove() { this.removed = true; } }),
+    createElement: tag => ({ tag, style: {}, children: [], append(...nodes) { this.children.push(...nodes); },
+      attachShadow: ({ mode }) => {
+        if (tag !== 'div') throw new DOMException('Unsupported shadow host in fixture', 'NotSupportedError');
+        assert.equal(mode, 'closed'); return { append: (...nodes) => children.push(...nodes) };
+      }, addEventListener() {}, removeAttribute(name) { delete this[name]; }, remove() { this.removed = true; } }),
   } });
   let sibling;
   sourceFloor.text.after = node => { sibling = node; };
@@ -160,14 +162,17 @@ test('default renderer appends a sibling with protected blob pixels and revokes 
   const { mount: _fake, ...deps } = h.deps;
   const stop = bindDirectImageInline(h.controller.signal, deps);
   h.run(); await until(() => sibling);
-  assert.equal(sibling.tag, 'figure');
+  assert.equal(sibling.tag, 'div');
   assert.equal(sourceFloor.text.original, 'untouched DOM');
-  assert.deepEqual(children.map(node => node.tag), ['figcaption', 'img']);
-  assert.equal(children[1].src, 'blob:neutral-fixture');
+  assert.deepEqual(children.map(node => node.tag), ['figure']);
+  const [caption, image] = children[0].children;
+  assert.equal(caption.tag, 'figcaption');
+  assert.equal(image.tag, 'img');
+  assert.equal(image.src, 'blob:neutral-fixture');
   assert.equal(create.mock.callCount(), 1);
   stop(); stop();
   assert.ok(sibling.removed);
-  assert.equal(children[1].src, undefined);
+  assert.equal(image.src, undefined);
   assert.deepEqual(revoke.mock.calls.map(call => call.arguments), [['blob:neutral-fixture']]);
 });
 
